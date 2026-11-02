@@ -40,6 +40,10 @@ static void test_descriptor(void)
 
     printf("endpoints from the PS5 fat / firmware 10.01 descriptor\n");
     CHECK(len == 474);
+    CHECK(usb_config_complete(cfg, len));
+    CHECK(!usb_config_complete(NULL, len));
+    CHECK(!usb_config_complete(cfg, -1));
+    for (i = 0; i < len; i++) CHECK(!usb_config_complete(cfg, i));
     n = usb_find_hci_functions(cfg, len, f);
     CHECK(n == 2);                                  /* two HCI functions, voice interfaces skipped */
     if (n == 2) {
@@ -57,8 +61,25 @@ static void test_descriptor(void)
     printf("a truncated or malformed descriptor never reads past its end\n");
     for (i = 0; i <= len; i += 7) usb_find_hci_functions(cfg, i, f);
     cfg[30] = 0;                                    /* a zero-length descriptor: stop */
+    CHECK(!usb_config_complete(cfg, len));
     CHECK(usb_find_hci_functions(cfg, len, f) <= HCI_FUNCTIONS_MAX);
     CHECK(usb_find_hci_functions(cfg, 0, f) == 0);
+}
+
+static void test_config_bounds(void)
+{
+    uint8_t cfg[] = {9,2,18,0,1,1,0,0x80,0, 9,4,0,0,0,0xe0,1,1,0};
+    printf("strict complete configuration boundaries\n");
+    CHECK(usb_config_complete(cfg, sizeof cfg));
+    cfg[9] = 8; CHECK(!usb_config_complete(cfg, sizeof cfg));
+    cfg[9] = 10; CHECK(!usb_config_complete(cfg, sizeof cfg));
+    cfg[9] = 9; cfg[10] = 2; CHECK(!usb_config_complete(cfg, sizeof cfg));
+    cfg[10] = 4; cfg[1] = 1; CHECK(!usb_config_complete(cfg, sizeof cfg));
+    cfg[1] = 2; cfg[2] = 19; CHECK(!usb_config_complete(cfg, sizeof cfg));
+    {
+        uint8_t short_ep[] = {9,2,15,0,1,1,0,0x80,0, 6,5,0x81,3,16,0};
+        CHECK(!usb_config_complete(short_ep, sizeof short_ep));
+    }
 }
 
 typedef struct { uint8_t ev[8][300]; int len[8]; int n; } sink;
@@ -134,6 +155,7 @@ static void test_evstream(void)
 int main(void)
 {
     test_descriptor();
+    test_config_bounds();
     test_evstream();
     printf(g_fail ? "%d check(s) failed\n" : "all usb checks passed\n", g_fail);
     return g_fail != 0;

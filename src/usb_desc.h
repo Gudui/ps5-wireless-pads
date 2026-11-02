@@ -29,4 +29,8 @@ typedef struct {
  * many were found (at most HCI_FUNCTIONS_MAX). */
 int usb_find_hci_functions(const uint8_t *cfg, int len, hci_function *out);
 
+/* Strictly validate one complete configuration before diagnosing its layout.
+ * Reject truncated streams, malformed lengths and short standard descriptors. */
+int usb_config_complete(const uint8_t *cfg, int len);
+
 #endif

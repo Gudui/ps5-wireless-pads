@@ -5,6 +5,23 @@
 #define DT_INTERFACE 0x04
 #define DT_ENDPOINT  0x05
 
+int usb_config_complete(const uint8_t *cfg, int len)
+{
+    int off;
+    if (!cfg || len < 9 || cfg[0] != 9 || cfg[1] != 2 ||
+        (cfg[2] | cfg[3] << 8) != len) return 0;
+    for (off = 0; off < len;) {
+        int size, type;
+        if (len - off < 2) return 0;
+        size = cfg[off]; type = cfg[off + 1];
+        if (size < 2 || size > len - off) return 0;
+        if ((type == DT_INTERFACE && size < 9) ||
+            (type == DT_ENDPOINT && size < 7) || (type == 2 && off != 0)) return 0;
+        off += size;
+    }
+    return 1;
+}
+
 int usb_find_hci_functions(const uint8_t *cfg, int len, hci_function *out)
 {
     int off = 0, n = 0, cur = -1;      /* cur: index in out of the interface being read */

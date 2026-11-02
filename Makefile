@@ -17,6 +17,11 @@ BUILD := build
 
 all: test
 
+# Read-only cached USB layout; never starts the controller bridge.
+.PHONY: bt-layout
+bt-layout:
+	$(MAKE) -f tools/bt_layout.mk BUILD_ID="$(BUILD_ID)"
+
 $(BUILD):
 	@mkdir -p $(BUILD)
 
