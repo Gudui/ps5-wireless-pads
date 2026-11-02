@@ -54,6 +54,7 @@ typedef struct {
     unsigned char buf[N_XFER][ACL_BUF];
     unsigned char busy[N_XFER];
     int n_event, n_acl;             /* reads actually opened */
+    int query_fs_initialized, query_sent;
     int dead;                       /* the device went away */
     ring events, acl;
 
@@ -521,4 +522,110 @@ int hci_usb_open(hci_t *out)
     out->ops = &k_usb_ops;
     out->ctx = c;
     return 1;
+}
+
+/* A deliberately smaller transport for qualifying command/event access. It
+ * shares the existing transfer/reassembly implementation, not host startup. */
+static int query_cleanup(usb_ctx *c)
+{
+    int ok = 1;
+    if (c->fd < 0) return 1;
+    if (c->query_fs_initialized) {
+        struct usb_fs_stop stop;
+        struct usb_fs_uninit uninit;
+        if (c->busy[0]) {
+            memset(&stop, 0, sizeof stop);
+            if (ioctl(c->fd, USB_FS_STOP, &stop) != 0) {
+                log_line("BT_VERSION cleanup operation=stop errno=%d", errno); ok = 0;
+            }
+        }
+        memset(&uninit, 0, sizeof uninit);
+        if (ioctl(c->fd, USB_FS_UNINIT, &uninit) != 0) {
+            log_line("BT_VERSION cleanup operation=uninit errno=%d", errno); ok = 0;
+        }
+    }
+    if (close(c->fd) != 0) {
+        log_line("BT_VERSION cleanup operation=close errno=%d", errno); ok = 0;
+    }
+    c->fd = -1; c->n_event = 0; c->query_fs_initialized = 0;
+    return ok;
+}
+
+static void query_close(void *ctx) { (void)query_cleanup(ctx); }
+static int query_cmd(void *ctx, unsigned op, const void *params, int len)
+{
+    usb_ctx *c = ctx;
+    if (op != 0x1001 || params || len != 0 || c->query_sent) return 0;
+    c->query_sent = 1; /* Failed submission must not become an implicit retry. */
+    log_line("BT_VERSION submit opcode=1001 parameters=0 attempt=1");
+    return op_cmd(c, op, params, len);
+}
+static const hci_ops query_ops = {
+    query_cmd, NULL, op_pump, op_next_event, NULL, query_close, NULL
+};
+
+int hci_usb_open_event_query(hci_t *out)
+{
+    usb_ctx *c = &g_ctx;
+    struct usb_gen_descriptor request;
+    struct usb_fs_init init;
+    hci_function functions[HCI_FUNCTIONS_MAX];
+    unsigned char config[4096];
+    int count;
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    memset(c, 0, sizeof *c);
+    c->fd = open(NODE, O_RDWR | O_NONBLOCK);
+    if (c->fd < 0) {
+        log_line("BT_VERSION transport operation=open errno=%d", errno); return 0;
+    }
+    if (ioctl(c->fd, USB_GET_DEVICE_DESC, &c->dd) != 0) {
+        log_line("BT_VERSION transport operation=device errno=%d", errno); goto fail;
+    }
+    if (UGETW(c->dd.idVendor) != 0x0e8d || UGETW(c->dd.idProduct) != 0x3603) {
+        log_line("BT_VERSION transport reason=identity-mismatch"); goto fail;
+    }
+    memset(&request, 0, sizeof request);
+    request.ugd_data = config; request.ugd_maxlen = sizeof config;
+    request.ugd_config_index = 0xff;
+    if (ioctl(c->fd, USB_GET_FULL_DESC, &request) != 0) {
+        log_line("BT_VERSION transport operation=config errno=%d", errno); goto fail;
+    }
+    if (request.ugd_actlen > sizeof config ||
+        !usb_config_complete(config, (int)request.ugd_actlen)) {
+        log_line("BT_VERSION transport reason=incomplete-descriptor"); goto fail;
+    }
+    count = usb_find_hci_functions(config, (int)request.ugd_actlen, functions);
+    if (!count || functions[0].iface != 0 || functions[0].ep_events != 0x81 ||
+        functions[0].mps_events != 16) {
+        log_line("BT_VERSION transport reason=layout-mismatch"); goto fail;
+    }
+    c->iface = 0; c->ep_events = 0x81; c->ev_read_len = 16;
+    evstream_init(&c->es);
+    c->bufp[0][0] = c->buf[0]; c->lenp[0][0] = 16;
+    c->ep[0].ppBuffer = c->bufp[0]; c->ep[0].pLength = c->lenp[0];
+    c->ep[0].nFrames = 1; c->ep[0].flags = USB_FS_FLAG_SINGLE_SHORT_OK;
+    memset(&init, 0, sizeof init);
+    init.pEndpoints = c->ep; init.ep_index_max = 1;
+    if (ioctl(c->fd, USB_FS_INIT, &init) != 0) {
+        log_line("BT_VERSION transport operation=fs-init errno=%d", errno); goto fail;
+    }
+    c->query_fs_initialized = 1;
+    if (!xfer_open(c, 0, c->ep_events, c->ev_read_len) ||
+        !xfer_start(c, 0, c->ev_read_len)) goto fail;
+    c->n_event = 1;
+    log_line("BT_VERSION transport interface=0 events=81 readers=1 acl=0");
+    out->ctx = c; out->ops = &query_ops; return 1;
+fail:
+    (void)query_cleanup(c);
+    return 0;
+}
+
+int hci_usb_finish_event_query(hci_t *transport)
+{
+    int ok;
+    if (!transport || transport->ops != &query_ops || transport->ctx != &g_ctx) return 0;
+    ok = query_cleanup(transport->ctx);
+    memset(transport, 0, sizeof *transport);
+    return ok;
 }

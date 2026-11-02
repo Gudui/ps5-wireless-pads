@@ -22,6 +22,15 @@ all: test
 bt-layout:
 	$(MAKE) -f tools/bt_layout.mk BUILD_ID="$(BUILD_ID)"
 
+.PHONY: bt-version
+bt-version:
+	$(MAKE) -f tools/bt_version.mk BUILD_ID="$(BUILD_ID)"
+
+$(BUILD)/test_version_query: src/version_query.c tests/test_version_query.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: $(BUILD)/test_version_query
+
 $(BUILD):
 	@mkdir -p $(BUILD)
 
@@ -86,6 +95,7 @@ $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 
 test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_web $(BUILD)/test_launcher $(BUILD)/test_i18n $(BUILD)/test_suspend
 	./$(BUILD)/test_usb
+	./$(BUILD)/test_version_query
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
 	./$(BUILD)/test_vpad
