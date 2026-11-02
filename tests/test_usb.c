@@ -60,7 +60,8 @@ static void test_descriptor(void)
 
     printf("a truncated or malformed descriptor never reads past its end\n");
     for (i = 0; i <= len; i += 7) usb_find_hci_functions(cfg, i, f);
-    cfg[30] = 0;                                    /* a zero-length descriptor: stop */
+    CHECK(cfg[26] == 7);                             /* first endpoint descriptor */
+    cfg[26] = 0;                                    /* a zero-length descriptor: stop */
     CHECK(!usb_config_complete(cfg, len));
     CHECK(usb_find_hci_functions(cfg, len, f) <= HCI_FUNCTIONS_MAX);
     CHECK(usb_find_hci_functions(cfg, 0, f) == 0);
