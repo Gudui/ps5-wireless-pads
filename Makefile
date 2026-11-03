@@ -127,3 +127,7 @@ send: ps5
 
 clean:
 	rm -rf $(BUILD)
+
+.PHONY: bt-adapter-layout
+bt-adapter-layout:
+	$(MAKE) -f tools/bt_layout.mk BUILD_ID="$(BUILD_ID)" dist/bt-adapter-layout.elf

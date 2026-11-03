@@ -33,4 +33,7 @@ int usb_find_hci_functions(const uint8_t *cfg, int len, hci_function *out);
  * Reject truncated streams, malformed lengths and short standard descriptors. */
 int usb_config_complete(const uint8_t *cfg, int len);
 
+/* Strict external ugen basename; excludes root hubs and internal ugen0.2. */
+int usb_ugen_external_name(const char *name);
+
 #endif

@@ -155,6 +155,18 @@ static void test_evstream(void)
 
 int main(void)
 {
+    {
+        const char *bad[] = { NULL, "", "ugen", "ugen0.2", "ugen0.0", "ugen1.0",
+            "ugen0.02", "ugen00.2", "ugen256.1", "ugen0.128", "ugen0.-1",
+            "ugen0.3.1", "ugen0.3/../x", "/dev/ugen0.3", "ugen0.3x", "ugen.3",
+            "ugen0.", "ugen999999999999999999999.3" };
+        unsigned j;
+        CHECK(usb_ugen_external_name("ugen0.3"));
+        CHECK(usb_ugen_external_name("ugen1.2"));
+        CHECK(usb_ugen_external_name("ugen255.127"));
+        for (j = 0; j < sizeof bad / sizeof bad[0]; j++)
+            CHECK(!usb_ugen_external_name(bad[j]));
+    }
     test_descriptor();
     test_config_bounds();
     test_evstream();

@@ -76,3 +76,23 @@ int usb_find_hci_functions(const uint8_t *cfg, int len, hci_function *out)
         return k;
     }
 }
+
+int usb_ugen_external_name(const char *name)
+{
+    unsigned part[2] = {0, 0};
+    int i;
+    if (!name || strncmp(name, "ugen", 4) != 0) return 0;
+    name += 4;
+    for (i = 0; i < 2; i++) {
+        const char *start = name;
+        if (*name < '0' || *name > '9') return 0;
+        while (*name >= '0' && *name <= '9') {
+            part[i] = part[i] * 10 + (unsigned)(*name++ - '0');
+            if (part[i] > 255) return 0;
+        }
+        if (name - start > 1 && *start == '0') return 0;
+        if (i == 0 && *name++ != '.') return 0;
+    }
+    return !*name && part[1] > 0 && part[1] <= 127 &&
+           !(part[0] == 0 && part[1] == 2);
+}

@@ -22,3 +22,15 @@ and HCI endpoints. Denied access, changed identity or incomplete descriptors
 are inconclusive. A complete descriptor with no HCI function is a negative
 layout result. Record controller/Home responsiveness separately. Do not follow
 this diagnostic with radio activity until the result has been reviewed.
+
+## External TP-Link cached layout
+
+`make bt-adapter-layout ...` builds `dist/bt-adapter-layout.elf` from the same
+cached-only producer and parser. It writes `/data/prospero-win/wii-bt-adapter-layout.log`
+with `BT_ADAPTER_LAYOUT` markers. It enumerates at most4096 /dev entries and32
+strict ugen basenames, excludes root hubs and internalugen0.2, opens external
+candidates read-only and copies cached device descriptors. Exactly one2357:0604
+match is required; only that adapter receives a cached full-descriptor query.
+No endpoint nodes, radio commands, firmware uploads, transfers or pairing.
+Malformed/traversal/alias/overflow node names are rejected by portable host tests.
+Successful cached layout does not prove HCI command/event or Realtek readiness.
