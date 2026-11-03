@@ -21,6 +21,7 @@
 #define OP_LINK_KEY_NEG_REPLY   0x040C
 #define OP_PIN_CODE_REPLY       0x040D
 #define OP_AUTH_REQUESTED       0x0411
+#define OP_REMOTE_NAME_REQ      0x0419
 #define OP_SET_ENCRYPTION       0x0413
 #define OP_IO_CAP_REPLY         0x042B
 #define OP_USER_CONFIRM_REPLY   0x042C
@@ -183,6 +184,9 @@ typedef struct {
     int pairing;            /* we found it in pairing mode */
     long t_create, t_conn;
 
+    int name_pending, wii_remote;
+    long t_name;
+    unsigned char create_params[13];
     int auth_sent, auth_ok, enc_sent, enc_on;
     long t_auth_ok, t_secure;
 

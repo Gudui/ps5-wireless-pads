@@ -44,6 +44,8 @@ struct sim {
     long t_report;
     int deaf;
     int ssp, scan;
+    int pin_replies, auth_successes;
+    unsigned char last_pin[23];
 };
 
 static long g_clock = 1000;
@@ -411,6 +413,24 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         cmd_complete(s, op, r, 8);
         break;
     }
+    case 0x1009: {
+        /* Includes a binary zero so PIN tests cannot accidentally use strlen. */
+        unsigned char r[7] = {0, 0x66, 0, 0x44, 0x33, 0x22, 0x11};
+        if (s->pad.no_host_address) memset(r + 1, 0, 6);
+        cmd_complete(s, op, r, sizeof r);
+        break;
+    }
+    case 0x0419: {
+        unsigned char r[255] = {0};
+        const char *name = s->pad.remote_name ? s->pad.remote_name : "Simulated Controller";
+        cmd_status(s, op, 0);
+        if (s->pad.no_name_reply) break;
+        r[0] = (unsigned char)s->pad.name_status;
+        memcpy(r + 1, s->pad.addr, 6);
+        strncpy((char *)r + 7, name, sizeof r - 8);
+        event(s, 0x07, r, sizeof r);
+        break;
+    }
     case 0x0401:        /* Inquiry */
         cmd_status(s, op, 0);
         if (s->pad.mode == SIM_WAIT_PAIRING && !s->connected) {
@@ -445,8 +465,20 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         break;
     case 0x040C:        /* Link Key Negative Reply: pair */
         cmd_ok(s, op);
-        ev_addr(s, 0x31);
+        ev_addr(s, s->pad.legacy_pin ? 0x16 : 0x31);
         break;
+    case 0x040D: {
+        static const unsigned char wii_pin[6] = {0x66, 0, 0x44, 0x33, 0x22, 0x11};
+        int ok = plen == 23 && !memcmp(p, s->pad.addr, 6);
+        s->pin_replies++;
+        if (plen == 23) memcpy(s->last_pin, p, 23);
+        if (s->pad.legacy_pin == 1) ok = ok && p[6] == 6 && !memcmp(p + 7, wii_pin, 6);
+        else ok = ok && p[6] == 4 && !memcmp(p + 7, "0000", 4);
+        cmd_ok(s, op);
+        if (ok) { new_key(s); s->auth_successes++; }
+        ev_handle(s, 0x06, ok ? 0 : 5, 0, 0);
+        break;
+    }
     case 0x042B: {      /* IO Capability Reply */
         unsigned char r[10] = { 0 };
         cmd_ok(s, op);
@@ -456,6 +488,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     }
     case 0x042C:        /* User Confirmation Reply */
         cmd_ok(s, op);
+        s->auth_successes++;
         new_key(s);
         ev_handle(s, 0x06, 0, 0, 0);
         break;
@@ -696,3 +729,10 @@ int sim_last_output(const sim_t *s, unsigned char *out, int max)
     memcpy(out, s->last_out, (size_t)n);
     return n;
 }
+
+int sim_pin_replies(const sim_t *s, unsigned char out[23])
+{
+    if (out) memcpy(out, s->last_pin, 23);
+    return s->pin_replies;
+}
+int sim_auth_successes(const sim_t *s) { return s->auth_successes; }

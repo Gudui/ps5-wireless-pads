@@ -864,6 +864,24 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
 
 /* ---- HCI events ----------------------------------------------------------- */
 
+/* HCI addresses are already least-significant-byte first. Wii red-Sync
+ * bonding uses these six host-address bytes verbatim, including zero bytes. */
+static int wii_remote_name(const unsigned char *name, int length)
+{
+    static const char original[] = "Nintendo RVL-CNT-01";
+    static const char motion_plus[] = "Nintendo RVL-CNT-01-TR";
+    return (length >= (int)sizeof original && !memcmp(name, original, sizeof original)) ||
+           (length >= (int)sizeof motion_plus && !memcmp(name, motion_plus, sizeof motion_plus));
+}
+
+static void create_named_link(host_t *h, link_t *l)
+{
+    l->name_pending = 0;
+    l->t_create = now_ms();
+    send_cmd(h, OP_CREATE_CONNECTION, l->create_params, sizeof l->create_params);
+    log_line("pad %s: connecting to pair", addr_str(l->addr));
+}
+
 static void pair_with(host_t *h, const unsigned char *rec)
 {
     unsigned char p[13];
@@ -889,8 +907,15 @@ static void pair_with(host_t *h, const unsigned char *rec)
     p[9] = 0;
     put16(p + 10, le16(rec + 11) | 0x8000);   /* clock offset, valid */
     p[12] = 1;                          /* allow role switch */
-    send_cmd(h, OP_CREATE_CONNECTION, p, 13);
-    log_line("pad %s: connecting to pair", addr_str(rec));
+    memcpy(l->create_params, p, sizeof l->create_params);
+    /* Name first: SDP IDs are available only after authentication in this
+     * stack, too late to select a Wii legacy PIN. Inquiry was cancelled above. */
+    memcpy(p, rec, 6);
+    p[6] = rec[6]; p[7] = 0;
+    put16(p + 8, le16(rec + 11) | 0x8000);
+    l->name_pending = 1;
+    l->t_name = now_ms();
+    if (!send_cmd(h, OP_REMOTE_NAME_REQ, p, 10)) create_named_link(h, l);
 }
 
 /* An inquiry record: addr 6, page scan mode 1, reserved 1, class 3,
@@ -982,6 +1007,14 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         log_line("pad %s: reconnecting", addr_str(ev + 2));
         break;
 
+    case 0x07:  /* Remote Name Request Complete: status, address, name */
+        if (len < 9 || !(l = link_by_addr(h, ev + 3)) || !l->name_pending) break;
+        l->wii_remote = ev[2] == 0 && wii_remote_name(ev + 9, len - 9);
+        if (l->wii_remote)
+            log_line("pad %s: Wii Remote name recognized (red Sync bonding)", addr_str(l->addr));
+        create_named_link(h, l);
+        break;
+
     case 0x03:  /* Connection Complete: status, handle, addr, type, enc */
         if (len < 13 || !(l = link_by_addr(h, ev + 5)) || l->connected) break;
         if (ev[2] != 0) {
@@ -1006,6 +1039,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (ev[2] == 0) {
             l->auth_ok = 1;
             l->t_auth_ok = now_ms();
+            if (l->wii_remote) log_line("pad %s: Wii authentication status 0", addr_str(l->addr));
             break;
         }
         log_line("pad %s: authentication failed (status %#04x)", addr_str(l->addr), ev[2]);
@@ -1083,11 +1117,21 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x16:  /* PIN Code Request: legacy pairing */
-        if (len < 8 || !link_by_addr(h, ev + 2)) break;
+        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
         memset(p, 0, sizeof p);
         memcpy(p, ev + 2, 6);
-        p[6] = 4;
-        memcpy(p + 7, "0000", 4);
+        if (l->wii_remote) {
+            static const unsigned char zero[6] = {0};
+            if (!memcmp(h->bdaddr, zero, sizeof zero)) {
+                link_disconnect(h, l, "Wii PIN unavailable: host address unknown"); break;
+            }
+            p[6] = 6;
+            memcpy(p + 7, h->bdaddr, 6);
+            log_line("pad %s: Wii binary PIN length 6 (host address, red Sync)", addr_str(l->addr));
+        } else {
+            p[6] = 4;
+            memcpy(p + 7, "0000", 4);
+        }
         send_cmd(h, OP_PIN_CODE_REPLY, p, 23);
         break;
 
@@ -1149,6 +1193,13 @@ static void link_step(host_t *h, link_t *l, long now)
         return;
     }
     if (!l->connected) {
+        if (l->name_pending) {
+            if (now - l->t_name >= 3000) {
+                log_line("pad %s: remote name unavailable, using existing pairing policy", addr_str(l->addr));
+                create_named_link(h, l);
+            }
+            return;
+        }
         if (now - l->t_create > T_CONN_TIMEOUT) link_disconnect(h, l, "no connection");
         return;
     }

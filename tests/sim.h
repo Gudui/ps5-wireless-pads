@@ -37,6 +37,11 @@ typedef struct {
      * take them. 0: none. */
     int drop_every;
     unsigned seed;
+    const char *remote_name;
+    int no_name_reply;
+    int name_status;
+    int no_host_address;
+    int legacy_pin; /* 1: Wii host-address PIN; 2: ASCII0000; 0: SSP. */
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -62,6 +67,8 @@ int    sim_outputs(const sim_t *s);
 int    sim_sdp_continuations(const sim_t *s);
 int    sim_last_output(const sim_t *s, unsigned char *out, int max);
 int    sim_link_up(const sim_t *s);
+int    sim_pin_replies(const sim_t *s, unsigned char out[23]);
+int    sim_auth_successes(const sim_t *s);
 int    sim_dropped(const sim_t *s);
 int    sim_scan(const sim_t *s);           /* the controller's scan enable */
 void   sim_set_scan(sim_t *s, int v);     /* someone else changes it */

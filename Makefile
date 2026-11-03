@@ -80,6 +80,7 @@ $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
 test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_web $(BUILD)/test_launcher $(BUILD)/test_i18n $(BUILD)/test_suspend
+	./$(BUILD)/test_wii_pairing
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
@@ -112,3 +113,8 @@ send: ps5
 
 clean:
 	rm -rf $(BUILD)
+
+$(BUILD)/test_wii_pairing: $(CORE) tests/sim.c tests/test_wii_pairing.c | $(BUILD)
+	cc $(HOST_CFLAGS) -o $@ $^
+
+test: $(BUILD)/test_wii_pairing
