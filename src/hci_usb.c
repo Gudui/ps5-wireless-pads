@@ -31,6 +31,7 @@
  * caps the transfers one process may have open (around 65), so events get
  * buffers sized for the largest event and ACL reads take the rest. */
 #define N_EVENT_RD  40
+#define QUERY_EVENT_READERS 40
 #define N_ACL_RD    20
 #define ACL_BUF     HCI_PKT_MAX
 
@@ -208,14 +209,15 @@ static int reap(usb_ctx *c)
         }
         if (c->query_fs_initialized) {
             c->query_poll_ok++;
-            if (done.ep_index != 0) c->query_poll_bad_index++;
+            if (done.ep_index >= c->n_event) c->query_poll_bad_index++;
             else {
-                unsigned n = c->lenp[0][0];
+                unsigned index = done.ep_index;
+                unsigned n = c->lenp[index][0];
                 c->query_last_length = n;
-                c->query_last_status = c->ep[0].status;
-                c->query_last_frames = c->ep[0].aFrames;
+                c->query_last_status = c->ep[index].status;
+                c->query_last_frames = c->ep[index].aFrames;
                 c->query_last_bytes_len = n < 16 ? n : 16;
-                memcpy(c->query_last_bytes, c->buf[0], c->query_last_bytes_len);
+                memcpy(c->query_last_bytes, c->buf[index], c->query_last_bytes_len);
             }
         }
         any = 1;
@@ -564,10 +566,13 @@ static int query_cleanup(usb_ctx *c)
     if (c->query_fs_initialized) {
         struct usb_fs_stop stop;
         struct usb_fs_uninit uninit;
-        if (c->busy[0]) {
+        int i;
+        for (i = 0; i < c->n_event; i++) {
+            if (!c->busy[i]) continue;
             memset(&stop, 0, sizeof stop);
+            stop.ep_index = (uint8_t)i;
             if (ioctl(c->fd, USB_FS_STOP, &stop) != 0) {
-                log_line("BT_VERSION cleanup operation=stop errno=%d", errno); ok = 0;
+                log_line("BT_VERSION cleanup operation=stop index=%d errno=%d", i, errno); ok = 0;
             }
         }
         memset(&uninit, 0, sizeof uninit);
@@ -591,8 +596,23 @@ static int query_cmd(void *ctx, unsigned op, const void *params, int len)
     log_line("BT_VERSION submit opcode=1001 parameters=0 attempt=1");
     return op_cmd(c, op, params, len);
 }
+/* Keep the diagnostic deadline even when completed reads contain no event.
+ * reap() cannot rearm reads, so at most n_event owned reads finish per pass. */
+static int query_pump(void *ctx, int timeout_ms)
+{
+    usb_ctx *c = ctx;
+    long deadline = now_ms() + timeout_ms;
+    for (;;) {
+        if (c->dead) return -1;
+        keep_reads_pending(c);
+        (void)reap(c);
+        if (c->events.count) return 1;
+        if (now_ms() >= deadline) return 0;
+        usleep(1000);
+    }
+}
 static const hci_ops query_ops = {
-    query_cmd, NULL, op_pump, op_next_event, NULL, query_close, NULL
+    query_cmd, NULL, query_pump, op_next_event, NULL, query_close, NULL
 };
 
 int hci_usb_open_event_query(hci_t *out)
@@ -602,7 +622,7 @@ int hci_usb_open_event_query(hci_t *out)
     struct usb_fs_init init;
     hci_function functions[HCI_FUNCTIONS_MAX];
     unsigned char config[4096];
-    int count;
+    int count, i;
     if (!out) return 0;
     memset(out, 0, sizeof *out);
     memset(c, 0, sizeof *c);
@@ -633,19 +653,22 @@ int hci_usb_open_event_query(hci_t *out)
     }
     c->iface = 0; c->ep_events = 0x81; c->ev_read_len = 16;
     evstream_init(&c->es);
-    c->bufp[0][0] = c->buf[0]; c->lenp[0][0] = 16;
-    c->ep[0].ppBuffer = c->bufp[0]; c->ep[0].pLength = c->lenp[0];
-    c->ep[0].nFrames = 1; c->ep[0].flags = USB_FS_FLAG_SINGLE_SHORT_OK;
+    for (i = 0; i < QUERY_EVENT_READERS; i++) {
+        c->bufp[i][0] = c->buf[i]; c->lenp[i][0] = 16;
+        c->ep[i].ppBuffer = c->bufp[i]; c->ep[i].pLength = c->lenp[i];
+        c->ep[i].nFrames = 1; c->ep[i].flags = USB_FS_FLAG_SINGLE_SHORT_OK;
+    }
     memset(&init, 0, sizeof init);
-    init.pEndpoints = c->ep; init.ep_index_max = 1;
+    init.pEndpoints = c->ep; init.ep_index_max = QUERY_EVENT_READERS;
     if (ioctl(c->fd, USB_FS_INIT, &init) != 0) {
         log_line("BT_VERSION transport operation=fs-init errno=%d", errno); goto fail;
     }
     c->query_fs_initialized = 1;
-    if (!xfer_open(c, 0, c->ep_events, c->ev_read_len) ||
-        !xfer_start(c, 0, c->ev_read_len)) goto fail;
-    c->n_event = 1;
-    log_line("BT_VERSION transport interface=0 events=81 readers=1 acl=0");
+    c->n_event = QUERY_EVENT_READERS;
+    for (i = 0; i < QUERY_EVENT_READERS; i++)
+        if (!xfer_open(c, i, c->ep_events, c->ev_read_len) ||
+            !xfer_start(c, i, c->ev_read_len)) goto fail;
+    log_line("BT_VERSION transport interface=0 events=81 readers=%d acl=0", c->n_event);
     out->ctx = c; out->ops = &query_ops; return 1;
 fail:
     (void)query_cleanup(c);
@@ -659,7 +682,8 @@ int hci_usb_finish_event_query(hci_t *transport)
     {
         usb_ctx *c = transport->ctx;
         char hex[3 * 16 + 1];
-        unsigned i;
+        unsigned i, pending = 0;
+        for (i = 0; i < (unsigned)c->n_event; i++) pending += c->busy[i] != 0;
         hex[0] = '\0';
         for (i = 0; i < c->query_last_bytes_len; i++)
             snprintf(hex + 3 * i, 4, "%02x ", c->query_last_bytes[i]);
@@ -668,7 +692,7 @@ int hci_usb_finish_event_query(hci_t *transport)
                  c->query_poll_again, c->query_poll_other, c->query_poll_bad_index,
                  c->query_last_errno);
         log_line("BT_VERSION snapshot reads_done=%u reads_empty=%u events_seen=%u pending=%u partial=%d dropped=%u last_status=%u last_frames=%u last_length=%u bytes=%s",
-                 c->reads_done, c->reads_empty, c->events_seen, (unsigned)c->busy[0],
+                 c->reads_done, c->reads_empty, c->events_seen, pending,
                  c->es.len, c->es.dropped, c->query_last_status, c->query_last_frames,
                  c->query_last_length, hex);
     }

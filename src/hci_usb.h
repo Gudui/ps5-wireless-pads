@@ -22,8 +22,8 @@
 /* Opens the controller. Returns 0 on failure, with the reason logged. */
 int hci_usb_open(hci_t *out);
 
-/* Restricted diagnostic: verifies known MediaTek interface0, opens one event
- * read, no ACL pipes, and permits just one Read Local Version command1001.
+/* Restricted diagnostic: verifies known MediaTek interface0, opens forty event
+ * reads, no ACL pipes, and permits just one Read Local Version command1001.
  * Never call host_open() with this transport. No reset/scan/pairing occurs. */
 int hci_usb_open_event_query(hci_t *out);
 /* Stop/uninitialize/close all owned resources; reports cleanup errors. */

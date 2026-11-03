@@ -4,8 +4,8 @@
 `dist/bt-version.elf`. It is separate from the controller bridge's startup.
 
 The diagnostic checks MediaTek0e8d:3603 and a complete cached configuration,
-then requires interface0 event endpoint81 with packet size16. It opens one
-USB_FS interrupt-IN transfer and sends one Read Local Version Information
+then requires interface0 event endpoint81 with packet size16. It opens forty
+USB_FS interrupt-IN transfers and sends one Read Local Version Information
 command1001 without parameters or retry. The restricted transport rejects all
 other commands and exposes no ACL send/receive operations. Up to60 pumps of50ms
 and64 events per pump bound the query. A matching Command Complete must have
@@ -13,7 +13,7 @@ the expected14-byte layout and status0; unrelated events cannot make it pass.
 
 Every owned transfer/file is stopped, uninitialized and closed, with errors
 reported. It does not reset, scan, pair, write keys, load firmware, detach a
-driver, create virtual controllers or change credentials. A single reader can
+driver, create virtual controllers or change credentials. Even forty readers can
 lose an event to the system driver; timeout does not prove the radio is broken.
 
 Output appends to `/data/prospero-win/wii-bt-version.log`. Record the exact begin
@@ -32,6 +32,13 @@ counters for existing COMPLETE calls (successful, EBUSY, EAGAIN and other errors
 invalid indices and the last completion metadata/first16 bytes. A snapshot before
 cleanup records read counts, pending state and assembler partial/dropped counts.
 This adds no ioctl or transport policy change. Invariants: polls equals the sum
-of ok/busy/again/other; reads_done plus bad_index equals ok for the one-slot query.
+of ok/busy/again/other; reads_done plus bad_index equals ok for the query (valid indices are below the strict forty-reader count).
 A zero-event timeout alone does not distinguish a pending USB read from failed
 completions or partial event bytes. These counters do not qualify pairing.
+
+The fanout revision requires all40 reads on endpoint81 to open and arm before
+sending1001. Setup failure sends no command; cleanup stops every pending owned
+read then uninitializes/closes, even if a stop fails. Snapshot pending is an
+aggregate count. The restricted pump checks its deadline on every pass, including
+completion churn, while the generic full bridge pump is unchanged. This is a
+controlled comparison with the one-reader baseline, not Wii pairing support.
