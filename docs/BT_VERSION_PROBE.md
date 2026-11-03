@@ -26,3 +26,12 @@ Host tests cover matching/foreign/malformed/truncated events, explicit errors,
 transport loss, no response and an event flood. They do not qualify USB access.
 Protocol: Bluetooth Core, Vol4 PartE7.4.1:
 https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-60/out/en/host-controller-interface/host-controller-interface-functional-specification.html
+
+The completion-observation revision also logs actual control-request length and
+counters for existing COMPLETE calls (successful, EBUSY, EAGAIN and other errors),
+invalid indices and the last completion metadata/first16 bytes. A snapshot before
+cleanup records read counts, pending state and assembler partial/dropped counts.
+This adds no ioctl or transport policy change. Invariants: polls equals the sum
+of ok/busy/again/other; reads_done plus bad_index equals ok for the one-slot query.
+A zero-event timeout alone does not distinguish a pending USB read from failed
+completions or partial event bytes. These counters do not qualify pairing.

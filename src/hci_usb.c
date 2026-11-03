@@ -55,6 +55,12 @@ typedef struct {
     unsigned char busy[N_XFER];
     int n_event, n_acl;             /* reads actually opened */
     int query_fs_initialized, query_sent;
+    unsigned query_poll_calls, query_poll_ok, query_poll_busy;
+    unsigned query_poll_again, query_poll_other, query_poll_bad_index;
+    int query_last_errno;
+    unsigned query_last_status, query_last_frames, query_last_length;
+    unsigned char query_last_bytes[16];
+    unsigned query_last_bytes_len;
     int dead;                       /* the device went away */
     ring events, acl;
 
@@ -190,7 +196,28 @@ static int reap(usb_ctx *c)
 
     for (;;) {
         memset(&done, 0, sizeof done);
-        if (ioctl(c->fd, USB_FS_COMPLETE, &done) != 0) break;
+        if (c->query_fs_initialized) c->query_poll_calls++;
+        if (ioctl(c->fd, USB_FS_COMPLETE, &done) != 0) {
+            if (c->query_fs_initialized) {
+                c->query_last_errno = errno;
+                if (errno == EBUSY) c->query_poll_busy++;
+                else if (errno == EAGAIN) c->query_poll_again++;
+                else c->query_poll_other++;
+            }
+            break;
+        }
+        if (c->query_fs_initialized) {
+            c->query_poll_ok++;
+            if (done.ep_index != 0) c->query_poll_bad_index++;
+            else {
+                unsigned n = c->lenp[0][0];
+                c->query_last_length = n;
+                c->query_last_status = c->ep[0].status;
+                c->query_last_frames = c->ep[0].aFrames;
+                c->query_last_bytes_len = n < 16 ? n : 16;
+                memcpy(c->query_last_bytes, c->buf[0], c->query_last_bytes_len);
+            }
+        }
         any = 1;
         if (done.ep_index >= N_XFER) continue;
         c->busy[done.ep_index] = 0;
@@ -259,6 +286,10 @@ static int op_cmd(void *ctx, unsigned opcode, const void *params, int plen)
         if (errno == ENXIO || errno == ENODEV || errno == EIO || errno == EBADF) c->dead = 1;
         return 0;
     }
+    if (c->query_fs_initialized)
+        log_line("BT_VERSION command_return actual_length=%u expected_length=%u request_type=%02x interface=%d",
+                 (unsigned)req.ucr_actlen, (unsigned)(3 + plen),
+                 (unsigned)req.ucr_request.bmRequestType, c->iface);
     return 1;
 }
 
@@ -625,6 +656,22 @@ int hci_usb_finish_event_query(hci_t *transport)
 {
     int ok;
     if (!transport || transport->ops != &query_ops || transport->ctx != &g_ctx) return 0;
+    {
+        usb_ctx *c = transport->ctx;
+        char hex[3 * 16 + 1];
+        unsigned i;
+        hex[0] = '\0';
+        for (i = 0; i < c->query_last_bytes_len; i++)
+            snprintf(hex + 3 * i, 4, "%02x ", c->query_last_bytes[i]);
+        log_line("BT_VERSION completion polls=%u ok=%u busy=%u again=%u other=%u bad_index=%u last_errno=%d",
+                 c->query_poll_calls, c->query_poll_ok, c->query_poll_busy,
+                 c->query_poll_again, c->query_poll_other, c->query_poll_bad_index,
+                 c->query_last_errno);
+        log_line("BT_VERSION snapshot reads_done=%u reads_empty=%u events_seen=%u pending=%u partial=%d dropped=%u last_status=%u last_frames=%u last_length=%u bytes=%s",
+                 c->reads_done, c->reads_empty, c->events_seen, (unsigned)c->busy[0],
+                 c->es.len, c->es.dropped, c->query_last_status, c->query_last_frames,
+                 c->query_last_length, hex);
+    }
     ok = query_cleanup(transport->ctx);
     memset(transport, 0, sizeof *transport);
     return ok;
