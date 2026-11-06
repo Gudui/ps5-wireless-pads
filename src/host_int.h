@@ -15,6 +15,7 @@
 #define OP_INQUIRY_CANCEL       0x0402
 #define OP_CREATE_CONNECTION    0x0405
 #define OP_DISCONNECT           0x0406
+#define OP_CREATE_CONN_CANCEL   0x0408
 #define OP_ACCEPT_CONNECTION    0x0409
 #define OP_REJECT_CONNECTION    0x040A
 #define OP_LINK_KEY_REPLY       0x040B
@@ -22,6 +23,7 @@
 #define OP_PIN_CODE_REPLY       0x040D
 #define OP_AUTH_REQUESTED       0x0411
 #define OP_REMOTE_NAME_REQ      0x0419
+#define OP_REMOTE_NAME_CANCEL   0x041A
 #define OP_SET_ENCRYPTION       0x0413
 #define OP_IO_CAP_REPLY         0x042B
 #define OP_USER_CONFIRM_REPLY   0x042C
@@ -71,6 +73,11 @@
 #define T_SELF_CHANNELS 1200    /* ... and open its own HID channels */
 #define T_INTR_AFTER     500    /* interrupt channel after control */
 #define T_CONN_TIMEOUT 20000    /* paging a pad */
+/* A name request pages the pad itself, which can take the whole page
+ * timeout (5.12 s by default) and more. Wait for its answer; past this,
+ * cancel it, and connect once the controller confirms or after the wait. */
+#define T_NAME_TIMEOUT 10000
+#define T_NAME_CANCEL_WAIT 2000
 #define T_SETUP_TIMEOUT 30000   /* connection to ready */
 #define T_CHAN_CONNECT  2500
 #define T_CFG_RESEND    1200
@@ -184,8 +191,9 @@ typedef struct {
     int pairing;            /* we found it in pairing mode */
     long t_create, t_conn;
 
-    int name_pending, wii_remote;
+    int name_pending, name_cancelled, wii_remote;
     long t_name;
+    int paging, page_started;       /* Create Connection sent; and accepted */
     unsigned char create_params[13];
     int auth_sent, auth_ok, enc_sent, enc_on;
     long t_auth_ok, t_secure;

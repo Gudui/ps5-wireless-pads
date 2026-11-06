@@ -42,6 +42,10 @@ typedef struct {
     int name_status;
     int no_host_address;
     int legacy_pin; /* 1: Wii host-address PIN; 2: ASCII0000; 0: SSP. */
+    /* The first N pages go unanswered: the controller pages until told to
+     * cancel. While it pages or asks a name, Create Connection is refused
+     * with "command disallowed", as a real controller does. */
+    int unanswered_pages;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -74,5 +78,8 @@ int    sim_scan(const sim_t *s);           /* the controller's scan enable */
 void   sim_set_scan(sim_t *s, int v);     /* someone else changes it */
 void   sim_stale_link(sim_t *s, unsigned handle);   /* the chip still holds the pad's link from an earlier run */
 int    sim_stale_cleared(const sim_t *s);
+int    sim_refused(const sim_t *s);        /* Create Connections refused while busy */
+int    sim_page_cancels(const sim_t *s);
+int    sim_name_cancels(const sim_t *s);
 
 #endif

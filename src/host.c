@@ -93,9 +93,22 @@ void link_disconnect(host_t *h, link_t *l, const char *why)
     unsigned char p[3];
 
     if (!l->connected) {
-        log_line("pad %s: dropped (%s)", addr_str(l->addr), why);
+        unsigned char a[6];
+        int paging = !l->le && l->paging, naming = !l->le && l->name_pending;
+
+        memcpy(a, l->addr, 6);
+        log_line("pad %s: dropped (%s)", addr_str(a), why);
         if (l->le) le_abandon(h, l);
         link_free(h, l);
+        /* The controller goes on paging (or asking the name) until told
+         * otherwise, and meanwhile refuses the next Create Connection with
+         * "command disallowed". Freed first: a reply names no link now. */
+        if (paging) {
+            log_line("pad %s: cancelling the page", addr_str(a));
+            send_cmd(h, OP_CREATE_CONN_CANCEL, a, 6);
+        } else if (naming) {
+            send_cmd(h, OP_REMOTE_NAME_CANCEL, a, 6);
+        }
         return;
     }
     if (l->disconnecting) return;
@@ -877,6 +890,9 @@ static int wii_remote_name(const unsigned char *name, int length)
 static void create_named_link(host_t *h, link_t *l)
 {
     l->name_pending = 0;
+    l->name_cancelled = 0;
+    l->paging = 1;
+    l->page_started = 0;
     l->t_create = now_ms();
     send_cmd(h, OP_CREATE_CONNECTION, l->create_params, sizeof l->create_params);
     log_line("pad %s: connecting to pair", addr_str(l->addr));
@@ -1010,18 +1026,30 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x07:  /* Remote Name Request Complete: status, address, name */
         if (len < 9 || !(l = link_by_addr(h, ev + 3)) || !l->name_pending) break;
         l->wii_remote = ev[2] == 0 && wii_remote_name(ev + 9, len - 9);
-        if (l->wii_remote)
+        if (l->wii_remote) {
             log_line("pad %s: Wii Remote name recognized (red Sync bonding)", addr_str(l->addr));
+        } else if (ev[2] != 0) {
+            log_line("pad %s: name request ended with status %#04x", addr_str(l->addr), ev[2]);
+            log_line("pad %s: remote name unavailable, using existing pairing policy", addr_str(l->addr));
+        }
+        if (l->connected) {             /* an earlier page connected meanwhile */
+            l->name_pending = 0;
+            break;
+        }
         create_named_link(h, l);
         break;
 
     case 0x03:  /* Connection Complete: status, handle, addr, type, enc */
         if (len < 13 || !(l = link_by_addr(h, ev + 5)) || l->connected) break;
         if (ev[2] != 0) {
+            /* Still asking the name, so not paging yet: this ends an
+             * earlier, cancelled page. */
+            if (l->name_pending) break;
             log_line("pad %s: connection failed (status %#04x)", addr_str(l->addr), ev[2]);
             link_free(h, l);
             break;
         }
+        l->paging = 0;
         l->connected = 1;
         l->handle = le16(ev + 3) & 0x0FFF;
         l->t_conn = now_ms();
@@ -1040,6 +1068,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             l->auth_ok = 1;
             l->t_auth_ok = now_ms();
             if (l->wii_remote) log_line("pad %s: Wii authentication status 0", addr_str(l->addr));
+            else if (l->pairing) log_line("pad %s: authentication status 0", addr_str(l->addr));
             break;
         }
         log_line("pad %s: authentication failed (status %#04x)", addr_str(l->addr), ev[2]);
@@ -1085,14 +1114,34 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             le_on_create_status(h, ev[2]);
             break;
         }
+        if (len >= 6 && ev[2] == 0 && le16(ev + 4) == OP_CREATE_CONNECTION) {
+            for (i = 0; i < HOST_MAX_PADS; i++) {
+                l = &h->links[i];
+                if (l->used && !l->connected && !l->le && l->paging && !l->page_started) {
+                    l->page_started = 1;
+                    log_line("pad %s: controller is paging it", addr_str(l->addr));
+                }
+            }
+        }
         if (len < 6 || ev[2] == 0) break;
         if (le16(ev + 4) == OP_CREATE_CONNECTION && ev[2] == 0x0B) purge_stale_links(h);
         if (le16(ev + 4) == OP_CREATE_CONNECTION) {
+            /* Only links that sent one: a link still asking its name has
+             * nothing to be refused. */
             for (i = 0; i < HOST_MAX_PADS; i++) {
                 l = &h->links[i];
-                if (l->used && !l->connected && !l->le && l->pairing) {
+                if (l->used && !l->connected && !l->le && l->paging) {
                     log_line("pad %s: connection refused (status %#04x)", addr_str(l->addr), ev[2]);
                     link_free(h, l);
+                }
+            }
+        } else if (le16(ev + 4) == OP_REMOTE_NAME_REQ) {
+            for (i = 0; i < HOST_MAX_PADS; i++) {
+                l = &h->links[i];
+                if (l->used && !l->connected && !l->le && l->name_pending) {
+                    log_line("pad %s: name request refused (status %#04x)", addr_str(l->addr), ev[2]);
+                    log_line("pad %s: remote name unavailable, using existing pairing policy", addr_str(l->addr));
+                    create_named_link(h, l);
                 }
             }
         } else if (le16(ev + 4) == OP_AUTH_REQUESTED) {
@@ -1131,14 +1180,17 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         } else {
             p[6] = 4;
             memcpy(p + 7, "0000", 4);
+            log_line("pad %s: legacy PIN requested, answering 0000", addr_str(l->addr));
         }
         send_cmd(h, OP_PIN_CODE_REPLY, p, 23);
         break;
 
     case 0x17:  /* Link Key Request */
-        if (len < 8 || !link_by_addr(h, ev + 2)) break;
+        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
         {
             db_rec *r = db_find(h, ev + 2);
+            if (l->pairing)
+                log_line("pad %s: link key requested, %s", addr_str(l->addr), r ? "answering the stored key" : "none stored");
             if (r) {
                 memcpy(p, ev + 2, 6);
                 memcpy(p + 6, r->key, 16);
@@ -1161,7 +1213,8 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x31:  /* IO Capability Request */
-        if (len < 8 || !link_by_addr(h, ev + 2)) break;
+        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
+        if (l->pairing) log_line("pad %s: Secure Simple Pairing requested", addr_str(l->addr));
         memcpy(p, ev + 2, 6);
         p[6] = 0x03;                    /* NoInputNoOutput */
         p[7] = 0x00;                    /* no OOB data */
@@ -1194,7 +1247,13 @@ static void link_step(host_t *h, link_t *l, long now)
     }
     if (!l->connected) {
         if (l->name_pending) {
-            if (now - l->t_name >= 3000) {
+            if (!l->name_cancelled && now - l->t_name >= T_NAME_TIMEOUT) {
+                log_line("pad %s: name request unanswered after %d s, cancelling it",
+                         addr_str(l->addr), T_NAME_TIMEOUT / 1000);
+                send_cmd(h, OP_REMOTE_NAME_CANCEL, l->addr, 6);
+                l->name_cancelled = 1;
+                l->t_name = now;
+            } else if (l->name_cancelled && now - l->t_name >= T_NAME_CANCEL_WAIT) {
                 log_line("pad %s: remote name unavailable, using existing pairing policy", addr_str(l->addr));
                 create_named_link(h, l);
             }
@@ -1215,6 +1274,7 @@ static void link_step(host_t *h, link_t *l, long now)
             put16(p, l->handle);
             send_cmd(h, OP_AUTH_REQUESTED, p, 2);
             l->auth_sent = 1;
+            if (l->pairing) log_line("pad %s: requesting authentication", addr_str(l->addr));
         }
         return;
     }

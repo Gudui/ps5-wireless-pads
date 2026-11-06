@@ -46,6 +46,8 @@ struct sim {
     int ssp, scan;
     int pin_replies, auth_successes;
     unsigned char last_pin[23];
+    int name_busy, page_busy, pages;
+    int refused, page_cancels, name_cancels;
 };
 
 static long g_clock = 1000;
@@ -424,7 +426,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         unsigned char r[255] = {0};
         const char *name = s->pad.remote_name ? s->pad.remote_name : "Simulated Controller";
         cmd_status(s, op, 0);
-        if (s->pad.no_name_reply) break;
+        if (s->pad.no_name_reply) { s->name_busy = 1; break; }
         r[0] = (unsigned char)s->pad.name_status;
         memcpy(r + 1, s->pad.addr, 6);
         strncpy((char *)r + 7, name, sizeof r - 8);
@@ -450,9 +452,49 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
             cmd_status(s, op, 0x0B);    /* connection already exists */
             break;
         }
+        if (s->name_busy || s->page_busy) {
+            s->refused++;
+            cmd_status(s, op, 0x0C);    /* command disallowed */
+            break;
+        }
         cmd_status(s, op, 0);
-        if (memcmp(p, s->pad.addr, 6) == 0) conn_complete(s);
+        if (memcmp(p, s->pad.addr, 6) != 0) break;
+        if (s->pages++ < s->pad.unanswered_pages) { s->page_busy = 1; break; }
+        conn_complete(s);
         break;
+    case 0x0408: {      /* Create Connection Cancel */
+        unsigned char r[7] = { 0 }, c[11] = { 0 };
+        memcpy(r + 1, p, 6);
+        if (!s->page_busy) {
+            r[0] = 0x0B;                /* nothing to cancel */
+            cmd_complete(s, op, r, 7);
+            break;
+        }
+        s->page_busy = 0;
+        s->page_cancels++;
+        cmd_complete(s, op, r, 7);
+        c[0] = 0x02;                    /* the page's end, as cancelled */
+        memcpy(c + 3, p, 6);
+        c[9] = 1;
+        event(s, 0x03, c, 11);
+        break;
+    }
+    case 0x041A: {      /* Remote Name Request Cancel */
+        unsigned char r[7] = { 0 }, n[255] = { 0 };
+        memcpy(r + 1, p, 6);
+        if (!s->name_busy) {
+            r[0] = 0x02;
+            cmd_complete(s, op, r, 7);
+            break;
+        }
+        s->name_busy = 0;
+        s->name_cancels++;
+        cmd_complete(s, op, r, 7);
+        n[0] = 0x02;
+        memcpy(n + 1, p, 6);
+        event(s, 0x07, n, sizeof n);
+        break;
+    }
     case 0x0409:        /* Accept Connection Request */
         cmd_status(s, op, 0);
         conn_complete(s);
@@ -736,3 +778,6 @@ int sim_pin_replies(const sim_t *s, unsigned char out[23])
     return s->pin_replies;
 }
 int sim_auth_successes(const sim_t *s) { return s->auth_successes; }
+int sim_refused(const sim_t *s) { return s->refused; }
+int sim_page_cancels(const sim_t *s) { return s->page_cancels; }
+int sim_name_cancels(const sim_t *s) { return s->name_cancels; }
