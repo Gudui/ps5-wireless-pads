@@ -81,5 +81,7 @@ int    sim_stale_cleared(const sim_t *s);
 int    sim_refused(const sim_t *s);        /* Create Connections refused while busy */
 int    sim_page_cancels(const sim_t *s);
 int    sim_name_cancels(const sim_t *s);
+int    sim_names(const sim_t *s);          /* Remote Name Requests */
+int    sim_names_unlinked(const sim_t *s); /* ... sent with no link to the pad */
 
 #endif

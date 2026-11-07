@@ -48,6 +48,7 @@ struct sim {
     unsigned char last_pin[23];
     int name_busy, page_busy, pages;
     int refused, page_cancels, name_cancels;
+    int names, names_unlinked;      /* name requests; those before a link */
 };
 
 static long g_clock = 1000;
@@ -426,6 +427,8 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         unsigned char r[255] = {0};
         const char *name = s->pad.remote_name ? s->pad.remote_name : "Simulated Controller";
         cmd_status(s, op, 0);
+        s->names++;
+        if (!s->connected) s->names_unlinked++;
         if (s->pad.no_name_reply) { s->name_busy = 1; break; }
         r[0] = (unsigned char)s->pad.name_status;
         memcpy(r + 1, s->pad.addr, 6);
@@ -781,3 +784,5 @@ int sim_auth_successes(const sim_t *s) { return s->auth_successes; }
 int sim_refused(const sim_t *s) { return s->refused; }
 int sim_page_cancels(const sim_t *s) { return s->page_cancels; }
 int sim_name_cancels(const sim_t *s) { return s->name_cancels; }
+int sim_names(const sim_t *s) { return s->names; }
+int sim_names_unlinked(const sim_t *s) { return s->names_unlinked; }

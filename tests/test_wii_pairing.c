@@ -32,7 +32,7 @@ static void check_pair(const char *name, int no_name, int name_status, int legac
     CHECK(host != NULL);
     if (!host) { sim_free(sim); return; }
     host_pair(host, 60);
-    /* Long enough for a cancelled name request (10 s + 2 s) or one page
+    /* Long enough for a cancelled name request (3 s + 1 s) or one page
      * left unanswered (20 s), then a fresh discovery and pairing. */
     end = sim_now() + 45000;
     while (sim_now() < end && (no_host_address || sim_auth_successes(sim) == 0)) host_poll(host, 5);
@@ -47,6 +47,9 @@ static void check_pair(const char *name, int no_name, int name_status, int legac
     } else CHECK(sim_pin_replies(sim, pin) == 0);
     /* Never page over a name request or a page still running. */
     CHECK(sim_refused(sim) == 0);
+    /* The name is asked over the link, never by paging the pad for it. */
+    CHECK(sim_names(sim) >= 1);
+    CHECK(sim_names_unlinked(sim) == 0);
     if (no_name) CHECK(sim_name_cancels(sim) == 1);
     else CHECK(sim_name_cancels(sim) == 0);
     CHECK(sim_page_cancels(sim) == unanswered_pages);

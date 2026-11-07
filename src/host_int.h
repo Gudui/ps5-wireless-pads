@@ -73,11 +73,11 @@
 #define T_SELF_CHANNELS 1200    /* ... and open its own HID channels */
 #define T_INTR_AFTER     500    /* interrupt channel after control */
 #define T_CONN_TIMEOUT 20000    /* paging a pad */
-/* A name request pages the pad itself, which can take the whole page
- * timeout (5.12 s by default) and more. Wait for its answer; past this,
- * cancel it, and connect once the controller confirms or after the wait. */
-#define T_NAME_TIMEOUT 10000
-#define T_NAME_CANCEL_WAIT 2000
+/* A pad being paired is asked its name over the new link before it is
+ * authenticated. Past this, cancel the request and authenticate once the
+ * controller confirms, or after the wait, with the existing PIN policy. */
+#define T_NAME_TIMEOUT 3000
+#define T_NAME_CANCEL_WAIT 1000
 #define T_SETUP_TIMEOUT 30000   /* connection to ready */
 #define T_CHAN_CONNECT  2500
 #define T_CFG_RESEND    1200
