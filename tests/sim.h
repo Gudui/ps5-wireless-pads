@@ -46,6 +46,10 @@ typedef struct {
      * cancel. While it pages or asks a name, Create Connection is refused
      * with "command disallowed", as a real controller does. */
     int unanswered_pages;
+    /* A Wii Remote: answers status and extension-id requests, and streams
+     * `report` once a reporting mode is set (`basic` before). 1: with a
+     * Guitar Hero guitar plugged in; 2: with nothing plugged in. */
+    int wii;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);

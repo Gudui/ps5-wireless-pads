@@ -768,6 +768,14 @@ void link_input(host_t *h, link_t *l, const unsigned char *rep, int len)
     if (!l->prof || len < 1) return;
     r = l->prof->parse(l->pctx.bytes, rep, len, &l->st);
     if (r == PARSE_FULL) l->full = 1;
+    if (r == PARSE_RESTART && l->prof->init_report && (l->init_done || l->init_step != 0)) {
+        log_line("pad %s: it dropped its setup, sending the wake-up sequence again", addr_str(l->addr));
+        l->init_done = 0;
+        l->init_step = 0;
+        l->init_rounds = 0;
+        l->full = 0;
+        l->t_init = now_ms();
+    }
     if (r != PARSE_NONE && l->ready && h->ev.on_state)
         h->ev.on_state(h->ev.ud, slot_of(h, l), &l->st);
 }
@@ -876,13 +884,15 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
 /* ---- HCI events ----------------------------------------------------------- */
 
 /* HCI addresses are already least-significant-byte first. Wii red-Sync
- * bonding uses these six host-address bytes verbatim, including zero bytes. */
+ * bonding uses these six host-address bytes verbatim, including zero bytes.
+ * Returns the remote's product id: 0x0306, 0x0330 (Wii Remote Plus), or 0. */
 static int wii_remote_name(const unsigned char *name, int length)
 {
     static const char original[] = "Nintendo RVL-CNT-01";
     static const char motion_plus[] = "Nintendo RVL-CNT-01-TR";
-    return (length >= (int)sizeof original && !memcmp(name, original, sizeof original)) ||
-           (length >= (int)sizeof motion_plus && !memcmp(name, motion_plus, sizeof motion_plus));
+    if (length >= (int)sizeof original && !memcmp(name, original, sizeof original)) return 0x0306;
+    if (length >= (int)sizeof motion_plus && !memcmp(name, motion_plus, sizeof motion_plus)) return 0x0330;
+    return 0;
 }
 
 static void page_pad(host_t *h, link_t *l)
@@ -1036,7 +1046,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x07:  /* Remote Name Request Complete: status, address, name */
         if (len < 9 || !(l = link_by_addr(h, ev + 3)) || !l->name_pending) break;
         l->name_pending = 0;            /* link_step authenticates next */
-        l->wii_remote = ev[2] == 0 && wii_remote_name(ev + 9, len - 9);
+        l->wii_remote = ev[2] == 0 ? wii_remote_name(ev + 9, len - 9) : 0;
         if (l->wii_remote) {
             log_line("pad %s: Wii Remote name recognized (red Sync bonding)", addr_str(l->addr));
         } else if (ev[2] != 0) {
@@ -1306,6 +1316,17 @@ static void link_step(host_t *h, link_t *l, long now)
             l->vid = r->vid;
             l->pid = r->pid;
             l->ids_known = 1;
+        } else if (l->wii_remote) {
+            /* Its name says which it is. A Wii Remote ends the link if its
+             * HID channels are not opened soon; skip the slow SDP queries. */
+            l->vid = 0x057E;
+            l->pid = (uint16_t)l->wii_remote;
+            l->ids_known = 1;
+            r = db_put(h, l->addr);
+            r->vid = l->vid;
+            r->pid = l->pid;
+            db_save(h);
+            log_line("pad %s: vendor %04x product %04x, from its name", addr_str(l->addr), l->vid, l->pid);
         } else {
             sdp_start(l, SDP_Q_IDS);
         }

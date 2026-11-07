@@ -576,6 +576,32 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     return 1;
 }
 
+/* A Wii Remote's answers: status 0x20 to 0x15, the extension id (0x21) to
+ * a read of 0xA400FA, and the full report once a reporting mode is set. */
+static void wii_answer(sim_t *s, const unsigned char *o, int n)
+{
+    static const unsigned char guitar_id[6] = { 0x00, 0x00, 0xA4, 0x20, 0x01, 0x03 };
+    unsigned char f[23];
+    int ext = s->pad.wii == 1;
+
+    memset(f, 0, sizeof f);
+    f[0] = 0xA1;
+    if (o[0] == 0x15) {
+        f[1] = 0x20;
+        f[4] = ext ? 0x12 : 0x10;       /* LED 1; extension plugged in */
+        f[7] = 0xC0;                    /* battery */
+        acl_to_host(s, s->intr.peer, f, 8);
+    } else if (o[0] == 0x17 && n >= 7 && o[2] == 0xA4 && o[4] == 0xFA) {
+        f[1] = 0x21;
+        f[4] = ext ? 0x50 : 0x57;       /* 6 bytes; or error 7: nothing there */
+        f[5] = 0x00; f[6] = 0xFA;
+        if (ext) memcpy(f + 7, guitar_id, 6);
+        acl_to_host(s, s->intr.peer, f, 23);
+    } else if (o[0] == 0x12 && n >= 3) {
+        s->got_output = 1;
+    }
+}
+
 static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
 {
     sim_t *s = ctx;
@@ -598,7 +624,8 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     else if (cid == RCID_SDP && s->sdp.st == RC_OPEN) on_host_sdp(s, d, n);
     else if (cid == RCID_INTR && n >= 2 && d[0] == 0xA2) {
         s->outputs++;
-        s->got_output = 1;
+        if (s->pad.wii) wii_answer(s, d + 1, n - 1);
+        else s->got_output = 1;
         s->last_out_len = n < (int)sizeof s->last_out ? n : (int)sizeof s->last_out;
         memcpy(s->last_out, d, (size_t)s->last_out_len);
     }

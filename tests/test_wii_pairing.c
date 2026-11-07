@@ -56,8 +56,64 @@ static void check_pair(const char *name, int no_name, int name_status, int legac
     host_close(host); sim_free(sim);
     unlink("build/test_wii_pads.db");
 }
+typedef struct { int connects, states; pad_info info; pad_state last; } seen;
+static void on_connect(void *ud, int slot, const pad_info *info)
+{
+    seen *s = ud; (void)slot; s->connects++; s->info = *info;
+}
+static void on_state(void *ud, int slot, const pad_state *st)
+{
+    seen *s = ud; (void)slot; s->states++; s->last = *st;
+}
+/* After red-Sync pairing, the remote is set up as a Wii Remote straight
+ * away: no SDP (its name gave its ids), the extension's id read, and its
+ * guitar's frets and strum reaching the pad state. wii: 1 guitar, 2 none. */
+static void check_wii_ready(int wii)
+{
+    sim_pad pad = {0};
+    seen s = {0};
+    host_events events = { on_connect, on_state, NULL, &s, NULL };
+    sim_t *sim;
+    host_t *host;
+    long end;
+    unlink("build/test_wii_pads.db");
+    pad.mode = SIM_WAIT_PAIRING;
+    pad.addr[0] = 0xfd; pad.addr[1] = 0x4e; pad.addr[2] = 0x7e;
+    pad.addr[3] = 0xaa; pad.addr[4] = 0x22;
+    pad.cod = 0x002504;
+    pad.vid = 0x057e; pad.pid = 0x0306;
+    pad.remote_name = "Nintendo RVL-CNT-01";
+    pad.legacy_pin = 1;
+    pad.wii = wii;
+    pad.needs_output = 1;
+    pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
+    pad.report[0] = 0x32; pad.report[2] = 0x08;
+    pad.report[3] = 0x20; pad.report[4] = 0x20; pad.report[5] = 0x0F; pad.report[6] = 0x10;
+    pad.report[7] = (unsigned char)~0x40;                                   /* strum down */
+    pad.report[8] = (unsigned char)~0x10;                                   /* green */
+    pad.report_len = 11;
+    sim = sim_new(&pad);
+    host = host_open(sim_hci(sim), "build/test_wii_pads.db", &events);
+    CHECK(host != NULL);
+    if (!host) { sim_free(sim); return; }
+    host_pair(host, 60);
+    end = sim_now() + 20000;
+    while (sim_now() < end) host_poll(host, 5);
+    CHECK(s.connects == 1);
+    CHECK(s.info.vid == 0x057e && s.info.pid == 0x0306);
+    CHECK(s.info.profile && !strcmp(s.info.profile, "Wii Remote"));
+    CHECK(sim_sdp_queries(sim) == 0);
+    CHECK(s.states > 0);
+    if (wii == 1) CHECK(s.last.buttons == (PAD_CROSS | PAD_DOWN));
+    else CHECK(s.last.buttons == PAD_CROSS);
+    CHECK(sim_last_output(sim, (unsigned char[32]){0}, 32) == 4);           /* 0xA2 0x12 0x04 0x32 */
+    host_close(host); sim_free(sim);
+    unlink("build/test_wii_pads.db");
+}
 int main(void)
 {
+    check_wii_ready(1);
+    check_wii_ready(2);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);
