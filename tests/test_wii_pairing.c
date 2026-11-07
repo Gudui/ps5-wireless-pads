@@ -50,7 +50,7 @@ static void check_pair(const char *name, int no_name, int name_status, int legac
     /* The name is asked over the link, never by paging the pad for it. */
     CHECK(sim_names(sim) >= 1);
     CHECK(sim_names_unlinked(sim) == 0);
-    if (no_name) CHECK(sim_name_cancels(sim) == 1);
+    if (no_name) CHECK(sim_name_cancels(sim) == 2);     /* asked twice */
     else CHECK(sim_name_cancels(sim) == 0);
     CHECK(sim_page_cancels(sim) == unanswered_pages);
     host_close(host); sim_free(sim);
@@ -71,7 +71,9 @@ static void on_state(void *ud, int slot, const pad_state *st)
  * trouble: 1 the answer to the first HID channel request is lost and a
  * repeat with the same cid ignored; 2 channel requests answered "pending"
  * for 4 s; 3 the first page times out, 4 the first two do: paged again at
- * once, first with R2 and no clock offset, then with the inquiry's. */
+ * once, first with R2 and no clock offset, then with the inquiry's; 5 the
+ * Encryption Change event is lost: asked again, channels opened meanwhile;
+ * 6 the name's answer is lost: asked again, so the Wii PIN still applies. */
 static void check_wii_ready(int wii, int trouble)
 {
     unsigned mode, offset;
@@ -93,6 +95,7 @@ static void check_wii_ready(int wii, int trouble)
     pad.lose_first_hid_rsp = pad.ignore_repeat_cid = trouble == 1;
     pad.pending_ms = trouble == 2 ? 4000 : 0;
     pad.page_timeouts = trouble == 3 ? 1 : trouble == 4 ? 2 : 0;
+    pad.lose_event = trouble == 5 ? 0x08 : trouble == 6 ? 0x07 : 0;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -111,6 +114,9 @@ static void check_wii_ready(int wii, int trouble)
     sim_last_page(sim, &mode, &offset);
     if (trouble == 3) CHECK(mode == 2 && offset == 0);
     else CHECK(offset & 0x8000);
+    if (trouble == 5) CHECK(sim_enc_requests(sim) >= 2);
+    else CHECK(sim_enc_requests(sim) == 1);
+    if (trouble == 6) CHECK(sim_names(sim) == 2 && sim_name_cancels(sim) == 0);
     CHECK(s.connects == 1);
     CHECK(s.info.vid == 0x057e && s.info.pid == 0x0306);
     CHECK(s.info.profile && !strcmp(s.info.profile, "Wii Remote"));
@@ -130,6 +136,8 @@ int main(void)
     check_wii_ready(1, 2);
     check_wii_ready(1, 3);
     check_wii_ready(1, 4);
+    check_wii_ready(1, 5);
+    check_wii_ready(1, 6);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);

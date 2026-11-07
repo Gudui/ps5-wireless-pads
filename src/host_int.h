@@ -82,6 +82,10 @@
  * controller confirms, or after the wait, with the existing PIN policy. */
 #define T_NAME_TIMEOUT 3000
 #define T_NAME_CANCEL_WAIT 1000
+#define NAME_TRIES         2    /* name requests before the existing PIN policy */
+#define T_ENC_RETRY     2000    /* no Encryption Change yet: ask again */
+#define T_AUTH_AFTER_KEY 500    /* a key stored but no Authentication Complete */
+#define ENC_TRIES          5
 #define T_SETUP_TIMEOUT 30000   /* connection to ready */
 #define T_CHAN_CONNECT  2500
 #define T_CHAN_PENDING 10000    /* after a "pending" connection response */
@@ -206,7 +210,8 @@ typedef struct {
     long t_rssi;
     unsigned char create_params[13];
     int auth_sent, auth_ok, enc_sent, enc_on;
-    long t_auth_ok, t_secure;
+    int enc_tries, enc_logged, name_tries;
+    long t_auth_ok, t_secure, t_enc;
 
     int ids_known;
     uint16_t vid, pid;

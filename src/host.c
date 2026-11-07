@@ -1002,6 +1002,7 @@ static void ask_name(host_t *h, link_t *l)
     p[8] = c[10]; p[9] = c[11];         /* clock offset */
     l->name_pending = 1;
     l->name_cancelled = 0;
+    l->name_tries++;
     l->t_name = now_ms();
     log_line("pad %s: asking its name over the link", addr_str(l->addr));
     if (!send_cmd(h, OP_REMOTE_NAME_REQ, p, 10)) l->name_pending = 0;
@@ -1112,6 +1113,8 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
 
     case 0x07:  /* Remote Name Request Complete: status, address, name */
         if (len < 9 || !(l = link_by_addr(h, ev + 3)) || !l->name_pending) break;
+        /* The end of a request we cancelled: link_step asks once more. */
+        if (ev[2] != 0 && l->name_cancelled && l->name_tries < NAME_TRIES) break;
         l->name_pending = 0;            /* link_step authenticates next */
         l->wii_remote = ev[2] == 0 ? wii_remote_name(ev + 9, len - 9) : 0;
         if (l->wii_remote) {
@@ -1238,9 +1241,16 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             for (i = 0; i < HOST_MAX_PADS; i++) {
                 l = &h->links[i];
                 if (l->used && l->auth_sent && !l->auth_ok) {
+                    log_line("pad %s: authentication request refused (status %#04x)", addr_str(l->addr), ev[2]);
                     l->auth_sent = 0;
                     l->t_conn = now_ms();
                 }
+            }
+        } else if (le16(ev + 4) == OP_SET_ENCRYPTION) {
+            for (i = 0; i < HOST_MAX_PADS; i++) {
+                l = &h->links[i];
+                if (l->used && !l->le && l->enc_sent && !l->enc_on)
+                    log_line("pad %s: encryption request refused (status %#04x)", addr_str(l->addr), ev[2]);
             }
         }
         break;
@@ -1300,6 +1310,13 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             r->type = ev[24];
             db_save(h);
         }
+        /* Bonded: authentication succeeded, even if its own event is lost.
+         * That event normally follows within milliseconds; until then (or
+         * 0.5 s) the controller may refuse encryption, so wait for it. */
+        if (!l->auth_ok) {
+            l->auth_ok = 1;
+            l->t_auth_ok = now_ms() + T_AUTH_AFTER_KEY;
+        }
         log_line("pad %s: paired, key stored", addr_str(ev + 2));
         break;
 
@@ -1356,8 +1373,15 @@ static void link_step(host_t *h, link_t *l, long now)
             l->name_cancelled = 1;
             l->t_name = now;
         } else if (l->name_cancelled && now - l->t_name >= T_NAME_CANCEL_WAIT) {
-            log_line("pad %s: remote name unavailable, using existing pairing policy", addr_str(l->addr));
-            l->name_pending = 0;
+            if (l->name_tries < NAME_TRIES) {
+                /* A Wii Remote answers in milliseconds when it answers: the
+                 * reply may have gone to the system's driver. */
+                log_line("pad %s: asking its name once more", addr_str(l->addr));
+                ask_name(h, l);
+            } else {
+                log_line("pad %s: remote name unavailable, using existing pairing policy", addr_str(l->addr));
+                l->name_pending = 0;
+            }
         }
         return;
     }
@@ -1373,16 +1397,31 @@ static void link_step(host_t *h, link_t *l, long now)
         return;
     }
     if (!l->enc_on) {
-        if (!l->enc_sent && now - l->t_auth_ok >= (l->pairing ? 0 : T_SELF_ENCRYPT)) {
+        int resend = l->enc_sent && now - l->t_enc >= T_ENC_RETRY && l->enc_tries < ENC_TRIES;
+        if ((!l->enc_sent && now - l->t_auth_ok >= (l->pairing ? 0 : T_SELF_ENCRYPT)) || resend) {
+            /* The Encryption Change event may have gone to the system's
+             * driver: asking again gets it reported again. */
+            if (resend)
+                log_line("pad %s: no encryption change after %d s, asking again",
+                         addr_str(l->addr), T_ENC_RETRY / 1000);
             put16(p, l->handle);
             p[2] = 1;
             send_cmd(h, OP_SET_ENCRYPTION, p, 3);
             l->enc_sent = 1;
+            l->enc_tries++;
+            l->t_enc = now;
         }
-        return;
-    }
-    if (!l->t_secure) {
-        l->t_secure = now;
+        /* A Wii Remote in red-Sync mode gives up within ~20-30 s of the
+         * button press: open its channels without waiting for encryption. */
+        if (!(l->pairing && l->wii_remote) || now < l->t_auth_ok) return;
+        if (!l->t_secure) {
+            l->t_secure = now;
+            log_line("pad %s: authenticated; opening its channels without waiting for encryption",
+                     addr_str(l->addr));
+        }
+    } else if (!l->enc_logged) {
+        l->enc_logged = 1;
+        if (!l->t_secure) l->t_secure = now;
         log_line("pad %s: link encrypted", addr_str(l->addr));
     }
 

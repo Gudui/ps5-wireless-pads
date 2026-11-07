@@ -59,6 +59,9 @@ typedef struct {
     int pending_ms;
     /* The first N pages end in a page timeout (0x04) after 15 s. */
     int page_timeouts;
+    /* The first event with this code goes to the system's driver, not the
+     * host. 0: none. */
+    int lose_event;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -97,6 +100,7 @@ int    sim_name_cancels(const sim_t *s);
 int    sim_names(const sim_t *s);          /* Remote Name Requests */
 int    sim_names_unlinked(const sim_t *s); /* ... sent with no link to the pad */
 int    sim_pages(const sim_t *s);          /* Create Connections to the pad */
+int    sim_enc_requests(const sim_t *s);   /* Set Connection Encryption commands */
 void   sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset);   /* its scan mode, clock offset */
 
 #endif

@@ -55,6 +55,7 @@ struct sim {
     int page_timeouts;              /* pages ended with status 0x04 so far */
     long page_fail_at;              /* when the running page times out, 0: none */
     unsigned last_page_mode, last_page_offset;
+    int lost_event, enc_requests;
 };
 
 static long g_clock = 1000;
@@ -92,6 +93,10 @@ static void event(sim_t *s, unsigned char code, const unsigned char *p, int n)
 {
     unsigned char e[260];
 
+    if (s->pad.lose_event && code == s->pad.lose_event && !s->lost_event) {
+        s->lost_event = 1;              /* taken by the system's driver */
+        return;
+    }
     e[0] = code;
     e[1] = (unsigned char)n;
     memcpy(e + 2, p, (size_t)n);
@@ -590,6 +595,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         }
         break;
     case 0x0413:        /* Set Connection Encryption */
+        s->enc_requests++;
         cmd_status(s, op, 0);
         s->enc = 1;
         ev_handle(s, 0x08, 0, 1, 1);
@@ -873,6 +879,7 @@ int sim_name_cancels(const sim_t *s) { return s->name_cancels; }
 int sim_names(const sim_t *s) { return s->names; }
 int sim_names_unlinked(const sim_t *s) { return s->names_unlinked; }
 int sim_pages(const sim_t *s) { return s->pages; }
+int sim_enc_requests(const sim_t *s) { return s->enc_requests; }
 void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
 {
     *mode = s->last_page_mode;
