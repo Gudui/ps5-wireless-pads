@@ -62,6 +62,16 @@ typedef struct {
     /* The first event with this code goes to the system's driver, not the
      * host. 0: none. */
     int lose_event;
+    /* Seen with a Wii Remote on the PS5: encryption takes this many ms to
+     * start, and the chip holds the host's ACL data until it is on (no
+     * completed-packet count); asked again meanwhile, it answers 0x23. */
+    int enc_delay_ms;
+    /* A Wii Remote holding a HID channel refuses a second request for it
+     * with another cid ("no resources", 4). */
+    int refuse_second_req;
+    /* The first HID control-channel request is answered (success) only
+     * this many ms later. */
+    int late_rsp_ms;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -101,6 +111,8 @@ int    sim_names(const sim_t *s);          /* Remote Name Requests */
 int    sim_names_unlinked(const sim_t *s); /* ... sent with no link to the pad */
 int    sim_pages(const sim_t *s);          /* Create Connections to the pad */
 int    sim_enc_requests(const sim_t *s);   /* Set Connection Encryption commands */
+int    sim_refused_chans(const sim_t *s);  /* HID channel requests refused as a second one */
+int    sim_ctrl_reqs(const sim_t *s);      /* HID control-channel requests */
 void   sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset);   /* its scan mode, clock offset */
 
 #endif

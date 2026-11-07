@@ -94,6 +94,10 @@
 #define T_SETUP_TIMEOUT 30000   /* connection to ready */
 #define T_CHAN_CONNECT  2500
 #define T_CHAN_PENDING 10000    /* after a "pending" connection response */
+/* The chip holds a link's data while encryption starts: a channel request
+ * sent meanwhile is counted from when encryption is on, this long at most. */
+#define T_CHAN_HELD    10000
+#define T_CHAN_REFUSED  1000    /* a refused channel is asked again after this */
 #define T_CHIP_STATS    5000    /* the chip's traffic is summed up this often while pairing */
 #define CHIP_CMDS         24    /* distinct opcodes counted per summary */
 #define OTHER_LOG_MAX     64    /* lines about the system's own connections, per run */
@@ -135,6 +139,10 @@ typedef struct {
     int cfg_tries;
     int pending;            /* the pad answered "pending": wait longer */
     long t_state, t_cfg;
+    long t_req;             /* when this connection request was first sent */
+    long t_retry;           /* refused: not asked again before this */
+    unsigned old_scid;      /* the cid of a request given up on, 0: none */
+    int held_logged;        /* "waiting for encryption" logged */
 } chan;
 
 /* A paired pad. Classic pads keep a link key; LE pads a long-term key

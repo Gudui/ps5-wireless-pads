@@ -74,7 +74,12 @@ static void on_state(void *ud, int slot, const pad_state *st)
  * for 4 s; 3 the first page times out, 4 the first two do: paged again at
  * once, first with R2 and no clock offset, then with the inquiry's; 5 the
  * Encryption Change event is lost: asked again, channels opened meanwhile;
- * 6 the name's answer is lost: asked again, so the Wii PIN still applies. */
+ * 6 the name's answer is lost: asked again, so the Wii PIN still applies;
+ * 7 encryption takes 4 s to start and the chip holds the channel request
+ * meanwhile: asked once, not again under another cid the remote refuses;
+ * 8 the first control-channel request is answered after 3 s, past the
+ * wait: the late answer is taken, and the second request's refusal does
+ * not undo it. Both 7 and 8 refuse a second request, as the remote did. */
 static void check_wii_ready(int wii, int trouble)
 {
     unsigned mode, offset;
@@ -97,6 +102,9 @@ static void check_wii_ready(int wii, int trouble)
     pad.pending_ms = trouble == 2 ? 4000 : 0;
     pad.page_timeouts = trouble == 3 ? 1 : trouble == 4 ? 2 : 0;
     pad.lose_event = trouble == 5 ? 0x08 : trouble == 6 ? 0x07 : 0;
+    pad.enc_delay_ms = trouble == 7 ? 4000 : 0;
+    pad.late_rsp_ms = trouble == 8 ? 3000 : 0;
+    pad.refuse_second_req = trouble == 7 || trouble == 8;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -115,8 +123,10 @@ static void check_wii_ready(int wii, int trouble)
     sim_last_page(sim, &mode, &offset);
     if (trouble == 3) CHECK(mode == 2 && offset == 0);
     else CHECK(offset & 0x8000);
-    if (trouble == 5) CHECK(sim_enc_requests(sim) >= 2);
+    if (trouble == 5 || trouble == 7) CHECK(sim_enc_requests(sim) >= 2);
     else CHECK(sim_enc_requests(sim) == 1);
+    if (trouble == 7) CHECK(sim_ctrl_reqs(sim) == 1 && sim_refused_chans(sim) == 0);
+    if (trouble == 8) CHECK(sim_ctrl_reqs(sim) >= 2 && sim_refused_chans(sim) >= 1);
     if (trouble == 6) CHECK(sim_names(sim) == 2 && sim_name_cancels(sim) == 0);
     CHECK(s.connects == 1);
     CHECK(s.info.vid == 0x057e && s.info.pid == 0x0306);
@@ -204,6 +214,8 @@ int main(void)
     check_wii_ready(1, 4);
     check_wii_ready(1, 5);
     check_wii_ready(1, 6);
+    check_wii_ready(1, 7);
+    check_wii_ready(1, 8);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);

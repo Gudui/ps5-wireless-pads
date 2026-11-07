@@ -382,6 +382,8 @@ static void chan_connect(host_t *h, link_t *l, chan *c)
     unsigned char r[4];
 
     chan_set(c, CH_CONNECTING);
+    c->t_req = now_ms();
+    c->held_logged = 0;
     put16(r, c->psm);
     put16(r + 2, c->scid);
     sig_send(h, l, SIG_CONN_REQ, next_sig_id(h), r, 4);
@@ -409,12 +411,24 @@ static void chan_lost(host_t *h, link_t *l, chan *c)
 
 static void chan_tick(host_t *h, link_t *l, chan *c, long now)
 {
+    /* Encryption being started: the chip sends nothing on the link until
+     * it is on, so the request has not gone out yet. Its wait starts then. */
+    if (c->st == CH_CONNECTING && !c->pending && l->enc_sent && !l->enc_on && now - c->t_req < T_CHAN_HELD) {
+        if (!c->held_logged) {
+            c->held_logged = 1;
+            log_line("pad %s: channel %#x: request held until the link is encrypted", addr_str(l->addr), c->psm);
+        }
+        c->t_state = now;
+        return;
+    }
     if (c->st == CH_CONNECTING && now - c->t_state > (c->pending ? T_CHAN_PENDING : T_CHAN_CONNECT)) {
         log_line("pad %s: channel %#x: no connection response (cid %#x; ACL sent %d, reported sent %d, received %d)",
                  addr_str(l->addr), c->psm, c->scid, l->n_tx, l->n_tx_done, l->n_rx);
         chan_set(c, CH_CLOSED);         /* opened again by the link's step */
         /* If the pad did take the request and only its answer was lost, it
-         * may ignore a repeat with the same cid: ask with a fresh one. */
+         * may ignore a repeat with the same cid: ask with a fresh one. Its
+         * answer to the old one may still come: see SIG_CONN_RSP. */
+        c->old_scid = c->scid;
         c->scid += 0x10;
         if (c->scid > 0xFF) c->scid = 0x40 | (c->scid & 0x0F);
     } else if (c->st == CH_CONFIG && now - c->t_state > T_CFG_TIMEOUT) {
@@ -468,7 +482,24 @@ static void on_signaling(host_t *h, link_t *l, const unsigned char *d, int len)
         case SIG_CONN_RSP:      /* dcid, scid, result, status */
             if (clen < 8) break;
             ch = chan_by_scid(l, le16(c + 2));
-            if (!ch || ch->st != CH_CONNECTING) break;
+            if (!ch) {
+                /* A late "yes" to a request given up on: the pad holds that
+                 * channel and would refuse a second one, so take it. */
+                chan *all[3] = { &l->sdp, &l->ctrl, &l->intr };
+                for (int k = 0; k < 3 && !ch; k++)
+                    if (all[k]->old_scid && all[k]->old_scid == le16(c + 2) &&
+                        (all[k]->st == CH_CLOSED || all[k]->st == CH_CONNECTING)) ch = all[k];
+                if (!ch || le16(c + 4) != 0) break;
+                log_line("pad %s: channel %#x: late answer to cid %#x, taking it",
+                         addr_str(l->addr), ch->psm, ch->old_scid);
+                ch->scid = ch->old_scid;
+                ch->old_scid = 0;
+                ch->dcid = le16(c);
+                chan_set(ch, CH_CONFIG);
+                chan_send_cfg(h, l, ch);
+                break;
+            }
+            if (ch->st != CH_CONNECTING) break;
             if (le16(c + 4) == 1) {                 /* pending: wait for the answer */
                 if (!ch->pending)
                     log_line("pad %s: channel %#x pending (status %u)", addr_str(l->addr), ch->psm, le16(c + 6));
@@ -479,6 +510,7 @@ static void on_signaling(host_t *h, link_t *l, const unsigned char *d, int len)
             if (le16(c + 4) != 0) {
                 log_line("pad %s: channel %#x refused (%u)", addr_str(l->addr), ch->psm, le16(c + 4));
                 chan_set(ch, CH_CLOSED);
+                ch->t_retry = now_ms() + T_CHAN_REFUSED;
                 break;
             }
             ch->dcid = le16(c);
@@ -861,6 +893,15 @@ void init_tick(host_t *h, link_t *l, long now)
 
 /* ---- inbound ACL ---------------------------------------------------------- */
 
+/* Four bytes as hex, for the log (two cids of a signaling command). */
+static const char *hex4(const unsigned char *b)
+{
+    static char s[16];
+
+    snprintf(s, sizeof s, "%02x %02x %02x %02x", b[0], b[1], b[2], b[3]);
+    return s;
+}
+
 static void on_frame(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int len)
 {
     chan *c;
@@ -872,7 +913,8 @@ static void on_frame(host_t *h, link_t *l, unsigned cid, const unsigned char *d,
     if (!l->ready && l->n_rx_logged < RX_LOG_MAX) {
         l->n_rx_logged++;
         if (cid == CID_SIGNALING && len >= 4)
-            log_line("pad %s: l2cap in: signal %#04x id %u, %d bytes", addr_str(l->addr), d[0], d[1], len);
+            log_line("pad %s: l2cap in: signal %#04x id %u, %d bytes%s%s", addr_str(l->addr), d[0], d[1], len,
+                     len >= 8 ? ": " : "", len >= 8 ? hex4(d + 4) : "");
         else
             log_line("pad %s: l2cap in: cid %#x, %d bytes", addr_str(l->addr), cid, len);
     }
@@ -1139,6 +1181,10 @@ static void chip_stats(host_t *h, long now, int active)
     if (now - h->st.t0 < T_CHIP_STATS) return;
     for (i = 0; i < 256; i++) any |= h->st.ev[i];
     any |= h->st.acl_ours | h->st.acl_other | h->st.n_cmd;
+    /* Outside pairing, only when there is more than command replies,
+     * completed-packet counts and LE reports. */
+    for (i = 0; i < 256 && !active; i++)
+        if (h->st.ev[i] && i != 0x0E && i != 0x0F && i != 0x13 && i != 0x3E) active = 1;
     if (active && any) {
         n += snprintf(line + n, sizeof line - (size_t)n, "chip, last %ld s: events", (now - h->st.t0) / 1000);
         for (i = 0; i < 256 && n < (int)sizeof line - 32; i++)
@@ -1403,7 +1449,13 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x17:  /* Link Key Request */
-        if (len < 8 || !(l = link_by_addr(h, ev + 2))) break;
+        if (len < 8) break;
+        if (!(l = link_by_addr(h, ev + 2))) {
+            if (other_line(h))
+                log_line("chip: link key requested for %s%s (no link of ours)", addr_str(ev + 2),
+                         db_find(h, ev + 2) ? ", a stored pad" : "");
+            break;
+        }
         {
             db_rec *r = db_find(h, ev + 2);
             if (l->pairing)
@@ -1587,9 +1639,10 @@ static void link_step(host_t *h, link_t *l, long now)
         int now_open = l->pairing && l->vid == 0x057E && (l->pid == 0x0306 || l->pid == 0x0330);
         chan_tick(h, l, &l->ctrl, now);
         chan_tick(h, l, &l->intr, now);
-        if (l->ctrl.st == CH_CLOSED && now - l->t_secure >= (now_open ? 0 : T_SELF_CHANNELS))
+        if (l->ctrl.st == CH_CLOSED && now >= l->ctrl.t_retry &&
+            now - l->t_secure >= (now_open ? 0 : T_SELF_CHANNELS))
             chan_connect(h, l, &l->ctrl);
-        if (l->ctrl.st == CH_OPEN && l->intr.st == CH_CLOSED &&
+        if (l->ctrl.st == CH_OPEN && l->intr.st == CH_CLOSED && now >= l->intr.t_retry &&
             now - l->ctrl.t_state >= (now_open ? 0 : T_INTR_AFTER))
             chan_connect(h, l, &l->intr);
     }

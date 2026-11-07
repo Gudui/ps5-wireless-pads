@@ -55,7 +55,9 @@ struct sim {
     int page_timeouts;              /* pages ended with status 0x04 so far */
     long page_fail_at;              /* when the running page times out, 0: none */
     unsigned last_page_mode, last_page_offset;
-    int lost_event, enc_requests;
+    int lost_event, enc_requests, refused_chans;
+    long enc_at;                    /* encryption comes on then, 0: not starting */
+    queue held;                     /* the host's ACL data until then */
 };
 
 static long g_clock = 1000;
@@ -249,6 +251,15 @@ static void on_host_signaling(sim_t *s, const unsigned char *d, int n)
         ch = rc_by_psm(s, le16(c));
         if (!ch) break;
         ch->reqs++;
+        if (s->pad.refuse_second_req && ch != &s->sdp && ch->st != RC_CLOSED && ch->peer != le16(c + 2)) {
+            s->refused_chans++;
+            put16(r, 0);
+            put16(r + 2, le16(c + 2));
+            put16(r + 4, 4);            /* no resources available */
+            put16(r + 6, 0);
+            sig(s, 0x03, id, r, 8);
+            break;
+        }
         /* A repeat of a request it already took, with the same cid. */
         if (s->pad.ignore_repeat_cid && ch->st != RC_CLOSED && ch->peer == le16(c + 2)) break;
         ch->peer = le16(c + 2);
@@ -256,6 +267,11 @@ static void on_host_signaling(sim_t *s, const unsigned char *d, int n)
         ch->cfg_in = ch->cfg_out = 0;
         ch->t_cfg = g_clock;
         if (ch == &s->ctrl && s->pad.lose_first_hid_rsp && ch->reqs == 1) break;  /* answer lost */
+        if (ch == &s->ctrl && s->pad.late_rsp_ms && ch->reqs == 1) {   /* answered late */
+            ch->pend_id = id;
+            ch->pend_until = g_clock + s->pad.late_rsp_ms;
+            break;
+        }
         if (ch != &s->sdp && s->pad.pending_ms) {
             put16(r, 0);
             put16(r + 2, ch->peer);
@@ -617,6 +633,15 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         break;
     case 0x0413:        /* Set Connection Encryption */
         s->enc_requests++;
+        if (s->pad.enc_delay_ms && !s->enc) {
+            if (s->enc_at) {
+                cmd_status(s, op, 0x23);    /* LMP error transaction collision */
+                break;
+            }
+            cmd_status(s, op, 0);
+            s->enc_at = g_clock + s->pad.enc_delay_ms;
+            break;
+        }
         cmd_status(s, op, 0);
         s->enc = 1;
         ev_handle(s, 0x08, 0, 1, 1);
@@ -677,6 +702,10 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     unsigned char ncp[5];
 
     if (len < 8 || !s->connected) return 1;
+    if (s->enc_at && !s->enc) {         /* held, not reported sent */
+        q_put(&s->held, pkt, len);
+        return 1;
+    }
     n = (int)le16(pkt + 4);
     cid = le16(pkt + 6);
     d = pkt + 8;
@@ -755,6 +784,14 @@ static int op_pump(void *ctx, int timeout_ms)
         memcpy(c + 3, s->pad.addr, 6);
         c[9] = 1;
         event(s, 0x03, c, 11);
+    }
+    if (s->enc_at && g_clock >= s->enc_at) {
+        unsigned char b[PKT];
+        int n;
+        s->enc_at = 0;
+        s->enc = 1;
+        ev_handle(s, 0x08, 0, 1, 1);
+        while ((n = q_get(&s->held, b, (int)sizeof b)) > 0) op_acl_send(s, b, n);
     }
     pad_step(s);
     return s->ev.count || s->acl.count;
@@ -847,6 +884,8 @@ void sim_disconnect(sim_t *s)
     p[3] = 0x13;
     event(s, 0x05, p, 4);
     s->connected = s->enc = s->got_output = 0;
+    s->enc_at = 0;
+    s->held.count = 0;
     s->sdp.st = s->ctrl.st = s->intr.st = RC_CLOSED;
 }
 
@@ -901,6 +940,8 @@ int sim_names(const sim_t *s) { return s->names; }
 int sim_names_unlinked(const sim_t *s) { return s->names_unlinked; }
 int sim_pages(const sim_t *s) { return s->pages; }
 int sim_enc_requests(const sim_t *s) { return s->enc_requests; }
+int sim_refused_chans(const sim_t *s) { return s->refused_chans; }
+int sim_ctrl_reqs(const sim_t *s) { return s->ctrl.reqs; }
 void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
 {
     *mode = s->last_page_mode;
