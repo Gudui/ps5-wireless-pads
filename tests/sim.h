@@ -50,6 +50,13 @@ typedef struct {
      * `report` once a reporting mode is set (`basic` before). 1: with a
      * Guitar Hero guitar plugged in; 2: with nothing plugged in. */
     int wii;
+    /* L2CAP trouble seen on the PS5: the answer to the host's first HID
+     * control-channel request is lost (to the system's driver); a repeat
+     * of a request already taken, same cid, is ignored; HID channel
+     * requests are answered "pending" first, success this many ms later. */
+    int lose_first_hid_rsp;
+    int ignore_repeat_cid;
+    int pending_ms;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);

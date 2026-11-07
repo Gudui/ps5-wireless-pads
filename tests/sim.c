@@ -26,6 +26,9 @@ typedef struct {
     rc_state st;
     int cfg_in, cfg_out;
     long t_cfg;
+    unsigned char pend_id;          /* a "pending" answer to complete... */
+    long pend_until;                /* ... then, 0: none */
+    int reqs;                       /* connection requests from the host */
 } rchan;
 
 struct sim {
@@ -237,9 +240,24 @@ static void on_host_signaling(sim_t *s, const unsigned char *d, int n)
     case 0x02:  /* connection request: psm, scid */
         ch = rc_by_psm(s, le16(c));
         if (!ch) break;
+        ch->reqs++;
+        /* A repeat of a request it already took, with the same cid. */
+        if (s->pad.ignore_repeat_cid && ch->st != RC_CLOSED && ch->peer == le16(c + 2)) break;
         ch->peer = le16(c + 2);
         ch->st = RC_CONFIG;
         ch->cfg_in = ch->cfg_out = 0;
+        ch->t_cfg = g_clock;
+        if (ch == &s->ctrl && s->pad.lose_first_hid_rsp && ch->reqs == 1) break;  /* answer lost */
+        if (ch != &s->sdp && s->pad.pending_ms) {
+            put16(r, 0);
+            put16(r + 2, ch->peer);
+            put16(r + 4, 1);            /* pending */
+            put16(r + 6, 0);
+            sig(s, 0x03, id, r, 8);
+            ch->pend_id = id;
+            ch->pend_until = g_clock + s->pad.pending_ms;
+            break;
+        }
         put16(r, ch->cid);
         put16(r + 2, ch->peer);
         put16(r + 4, 0);
@@ -642,9 +660,21 @@ static void pad_step(sim_t *s)
 
     /* L2CAP's retransmission timer: an unanswered request is sent again. */
     all[0] = &s->sdp; all[1] = &s->ctrl; all[2] = &s->intr;
-    for (i = 0; i < 3; i++)
-        if (all[i]->st == RC_CONFIG && !all[i]->cfg_out && g_clock - all[i]->t_cfg >= 1000)
-            rc_send_cfg(s, all[i]);
+    for (i = 0; i < 3; i++) {
+        rchan *ch = all[i];
+        if (ch->pend_until && g_clock >= ch->pend_until) {
+            unsigned char r[8];
+            ch->pend_until = 0;
+            put16(r, ch->cid);
+            put16(r + 2, ch->peer);
+            put16(r + 4, 0);
+            put16(r + 6, 0);
+            sig(s, 0x03, ch->pend_id, r, 8);
+            rc_send_cfg(s, ch);
+        } else if (!ch->pend_until && ch->st == RC_CONFIG && !ch->cfg_out && g_clock - ch->t_cfg >= 1000) {
+            rc_send_cfg(s, ch);
+        }
+    }
 
     if (s->pad.mode == SIM_RECONNECT) {
         if (s->ctrl.st == RC_CLOSED) rc_connect(s, &s->ctrl);
@@ -724,9 +754,9 @@ sim_t *sim_new(const sim_pad *pad)
 
     s->pad = *pad;
     s->drop_count = pad->seed;
-    s->sdp = (rchan){ 0x01, RCID_SDP, 0, RC_CLOSED, 0, 0, 0 };
-    s->ctrl = (rchan){ 0x11, RCID_CTRL, 0, RC_CLOSED, 0, 0, 0 };
-    s->intr = (rchan){ 0x13, RCID_INTR, 0, RC_CLOSED, 0, 0, 0 };
+    s->sdp = (rchan){ .psm = 0x01, .cid = RCID_SDP, .st = RC_CLOSED };
+    s->ctrl = (rchan){ .psm = 0x11, .cid = RCID_CTRL, .st = RC_CLOSED };
+    s->intr = (rchan){ .psm = 0x13, .cid = RCID_INTR, .st = RC_CLOSED };
     ph_clock_hook = sim_now;
     return s;
 }

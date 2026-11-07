@@ -67,8 +67,11 @@ static void on_state(void *ud, int slot, const pad_state *st)
 }
 /* After red-Sync pairing, the remote is set up as a Wii Remote straight
  * away: no SDP (its name gave its ids), the extension's id read, and its
- * guitar's frets and strum reaching the pad state. wii: 1 guitar, 2 none. */
-static void check_wii_ready(int wii)
+ * guitar's frets and strum reaching the pad state. wii: 1 guitar, 2 none.
+ * trouble: 1 the answer to the first HID channel request is lost and a
+ * repeat with the same cid ignored; 2 channel requests answered "pending"
+ * for 4 s. */
+static void check_wii_ready(int wii, int trouble)
 {
     sim_pad pad = {0};
     seen s = {0};
@@ -85,6 +88,8 @@ static void check_wii_ready(int wii)
     pad.remote_name = "Nintendo RVL-CNT-01";
     pad.legacy_pin = 1;
     pad.wii = wii;
+    pad.lose_first_hid_rsp = pad.ignore_repeat_cid = trouble == 1;
+    pad.pending_ms = trouble == 2 ? 4000 : 0;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -112,8 +117,10 @@ static void check_wii_ready(int wii)
 }
 int main(void)
 {
-    check_wii_ready(1);
-    check_wii_ready(2);
+    check_wii_ready(1, 0);
+    check_wii_ready(2, 0);
+    check_wii_ready(1, 1);
+    check_wii_ready(1, 2);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);

@@ -80,6 +80,8 @@
 #define T_NAME_CANCEL_WAIT 1000
 #define T_SETUP_TIMEOUT 30000   /* connection to ready */
 #define T_CHAN_CONNECT  2500
+#define T_CHAN_PENDING 10000    /* after a "pending" connection response */
+#define RX_LOG_MAX        24    /* inbound frames logged per link before ready */
 #define T_CFG_RESEND    1200
 #define CFG_TRIES          6
 #define T_CFG_TIMEOUT   4000    /* the pad's own request may have been lost */
@@ -115,6 +117,7 @@ typedef struct {
     int cfg_ours_ok;        /* the pad accepted our configuration */
     int cfg_theirs_ok;      /* we accepted the pad's */
     int cfg_tries;
+    int pending;            /* the pad answered "pending": wait longer */
     long t_state, t_cfg;
 } chan;
 
@@ -213,6 +216,12 @@ typedef struct {
 
     chan sdp, ctrl, intr;
     int ready, disconnecting;
+
+    /* ACL packets we sent, the controller reported sent (Number Of
+     * Completed Packets), and the pad sent us; inbound frames logged
+     * before ready. For telling a silent pad from answers lost to the
+     * system's driver. */
+    int n_tx, n_tx_done, n_rx, n_rx_logged;
 
     unsigned char rx[1024];
     int rx_len, rx_need;

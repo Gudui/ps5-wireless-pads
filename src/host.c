@@ -284,6 +284,7 @@ int l2_send(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int len)
     memcpy(pkt + 8, d, (size_t)len);
     if (!h->hci.ops->acl_send(h->hci.ctx, pkt, 8 + len)) return 0;
 
+    l->n_tx++;
     pool->credits--;
     if (pool->count == INFLIGHT_MAX) {
         pool->head = (pool->head + 1) % INFLIGHT_MAX;
@@ -334,6 +335,7 @@ static void chan_set(chan *c, chan_state st)
 {
     c->st = st;
     c->t_state = now_ms();
+    c->pending = 0;
     if (st != CH_OPEN) c->cfg_ours_ok = c->cfg_theirs_ok = 0;
     if (st == CH_CONFIG) c->cfg_tries = 0;
 }
@@ -389,9 +391,14 @@ static void chan_lost(host_t *h, link_t *l, chan *c)
 
 static void chan_tick(host_t *h, link_t *l, chan *c, long now)
 {
-    if (c->st == CH_CONNECTING && now - c->t_state > T_CHAN_CONNECT) {
-        log_line("pad %s: channel %#x: no connection response", addr_str(l->addr), c->psm);
+    if (c->st == CH_CONNECTING && now - c->t_state > (c->pending ? T_CHAN_PENDING : T_CHAN_CONNECT)) {
+        log_line("pad %s: channel %#x: no connection response (cid %#x; ACL sent %d, reported sent %d, received %d)",
+                 addr_str(l->addr), c->psm, c->scid, l->n_tx, l->n_tx_done, l->n_rx);
         chan_set(c, CH_CLOSED);         /* opened again by the link's step */
+        /* If the pad did take the request and only its answer was lost, it
+         * may ignore a repeat with the same cid: ask with a fresh one. */
+        c->scid += 0x10;
+        if (c->scid > 0xFF) c->scid = 0x40 | (c->scid & 0x0F);
     } else if (c->st == CH_CONFIG && now - c->t_state > T_CFG_TIMEOUT) {
         /* Only the pad can repeat its configuration request; if it went to
          * the system's driver, start the channel over. */
@@ -444,7 +451,13 @@ static void on_signaling(host_t *h, link_t *l, const unsigned char *d, int len)
             if (clen < 8) break;
             ch = chan_by_scid(l, le16(c + 2));
             if (!ch || ch->st != CH_CONNECTING) break;
-            if (le16(c + 4) == 1) break;            /* pending */
+            if (le16(c + 4) == 1) {                 /* pending: wait for the answer */
+                if (!ch->pending)
+                    log_line("pad %s: channel %#x pending (status %u)", addr_str(l->addr), ch->psm, le16(c + 6));
+                ch->pending = 1;
+                ch->t_state = now_ms();
+                break;
+            }
             if (le16(c + 4) != 0) {
                 log_line("pad %s: channel %#x refused (%u)", addr_str(l->addr), ch->psm, le16(c + 4));
                 chan_set(ch, CH_CLOSED);
@@ -838,6 +851,13 @@ static void on_frame(host_t *h, link_t *l, unsigned cid, const unsigned char *d,
         le_on_frame(h, l, cid, d, len);
         return;
     }
+    if (!l->ready && l->n_rx_logged < RX_LOG_MAX) {
+        l->n_rx_logged++;
+        if (cid == CID_SIGNALING && len >= 4)
+            log_line("pad %s: l2cap in: signal %#04x id %u, %d bytes", addr_str(l->addr), d[0], d[1], len);
+        else
+            log_line("pad %s: l2cap in: cid %#x, %d bytes", addr_str(l->addr), cid, len);
+    }
     if (cid == CID_SIGNALING) {
         on_signaling(h, l, d, len);
         return;
@@ -860,6 +880,7 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     dlen = (int)le16(pkt + 2);
     l = link_by_handle(h, hdr);
     if (!l || 4 + dlen > len) return;   /* not ours, or cut short */
+    l->n_rx++;
 
     if (pb == 1) {                      /* continuation */
         if (!l->rx_need || l->rx_len + dlen > (int)sizeof l->rx) {
@@ -1031,6 +1052,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             db_rec *r = db_find(h, ev + 2);
             if (!r || r->le || link_by_addr(h, ev + 2)) break;      /* not ours */
         }
+        log_line("pad %s: asks to connect, accepting", addr_str(ev + 2));
         l = link_new(h, ev + 2);
         memcpy(p, ev + 2, 6);
         if (!l) {
@@ -1072,7 +1094,8 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
 
     case 0x05:  /* Disconnection Complete: status, handle, reason */
         if (len < 6 || !(l = link_by_handle(h, le16(ev + 3)))) break;
-        log_line("pad %s: disconnected (reason %#04x)", addr_str(l->addr), ev[5]);
+        log_line("pad %s: disconnected (reason %#04x); ACL sent %d, reported sent %d, received %d",
+                 addr_str(l->addr), ev[5], l->n_tx, l->n_tx_done, l->n_rx);
         link_free(h, l);
         break;
 
@@ -1175,7 +1198,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         for (i = 0; i < ev[2] && 3 + i * 4 + 4 <= len; i++) {
             int done = (int)le16(ev + 3 + i * 4 + 2);
             l = link_by_handle(h, le16(ev + 3 + i * 4));
-            if (l) pool_done(pool_of(h, l), done);
+            if (l) {
+                pool_done(pool_of(h, l), done);
+                l->n_tx_done += done;
+            }
         }
         break;
 
@@ -1348,13 +1374,18 @@ static void link_step(host_t *h, link_t *l, long now)
     if (l->sdp.st == CH_OPEN) chan_close(h, l, &l->sdp);
 
     /* HID channels: control, then interrupt. */
-    chan_tick(h, l, &l->ctrl, now);
-    chan_tick(h, l, &l->intr, now);
-    if (l->ctrl.st == CH_CLOSED && now - l->t_secure >= T_SELF_CHANNELS)
-        chan_connect(h, l, &l->ctrl);
-    if (l->ctrl.st == CH_OPEN && l->intr.st == CH_CLOSED &&
-        now - l->ctrl.t_state >= T_INTR_AFTER)
-        chan_connect(h, l, &l->intr);
+    /* A Wii Remote being paired waits for us to open them, and gives up on
+     * the link soon: open them at once. Reconnecting, it opens its own. */
+    {
+        int now_open = l->pairing && l->vid == 0x057E && (l->pid == 0x0306 || l->pid == 0x0330);
+        chan_tick(h, l, &l->ctrl, now);
+        chan_tick(h, l, &l->intr, now);
+        if (l->ctrl.st == CH_CLOSED && now - l->t_secure >= (now_open ? 0 : T_SELF_CHANNELS))
+            chan_connect(h, l, &l->ctrl);
+        if (l->ctrl.st == CH_OPEN && l->intr.st == CH_CLOSED &&
+            now - l->ctrl.t_state >= (now_open ? 0 : T_INTR_AFTER))
+            chan_connect(h, l, &l->intr);
+    }
 
     if (!l->ready) {
         if (l->ctrl.st == CH_OPEN && l->intr.st == CH_OPEN) link_ready(h, l);
