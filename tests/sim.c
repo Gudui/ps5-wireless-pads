@@ -434,6 +434,27 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         s->scan = p[0];
         cmd_ok(s, op);
         break;
+    case 0x0C17: {      /* Read Page Timeout: 0x2000 slots, the default */
+        unsigned char r[3] = { 0, 0x00, 0x20 };
+        cmd_complete(s, op, r, 3);
+        break;
+    }
+    case 0x0C1B:        /* Read Page / Inquiry Scan Activity: 1.28 s, 11.25 ms */
+    case 0x0C1D: {
+        unsigned char r[5] = { 0, 0x00, 0x08, 0x12, 0x00 };
+        cmd_complete(s, op, r, 5);
+        break;
+    }
+    case 0x0C44: {      /* Read Inquiry Mode: extended */
+        unsigned char r[2] = { 0, 2 };
+        cmd_complete(s, op, r, 2);
+        break;
+    }
+    case 0x0C46: {      /* Read Page Scan Type: standard */
+        unsigned char r[2] = { 0, 0 };
+        cmd_complete(s, op, r, 2);
+        break;
+    }
     case 0x1005: {      /* Read Buffer Size */
         unsigned char r[8] = { 0 };
         put16(r + 1, 1021);

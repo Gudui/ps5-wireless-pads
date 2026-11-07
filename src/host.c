@@ -27,8 +27,26 @@ const char *addr_str(const unsigned char *a)
     return s;
 }
 
+/* Counts a command sent (ours) or answered (anyone's) for the summary. */
+static void stats_cmd(host_t *h, unsigned op, int sent)
+{
+    int i;
+
+    if (!op) return;                    /* a credits-only Command Complete */
+    for (i = 0; i < h->st.n_cmd && h->st.cmd[i].op != op; i++) {}
+    if (i == h->st.n_cmd) {
+        if (i == CHIP_CMDS) return;
+        h->st.cmd[i].op = op;
+        h->st.cmd[i].sent = h->st.cmd[i].answered = 0;
+        h->st.n_cmd++;
+    }
+    if (sent) h->st.cmd[i].sent++;
+    else h->st.cmd[i].answered++;
+}
+
 int send_cmd(host_t *h, unsigned op, const void *p, int len)
 {
+    stats_cmd(h, op, 1);
     return h->hci.ops->cmd(h->hci.ctx, op, p, len);
 }
 
@@ -879,6 +897,8 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     pb = (int)(hdr >> 12) & 3;
     dlen = (int)le16(pkt + 2);
     l = link_by_handle(h, hdr);
+    if (l) h->st.acl_ours++;
+    else h->st.acl_other++;
     if (!l || 4 + dlen > len) return;   /* not ours, or cut short */
     l->n_rx++;
 
@@ -1059,6 +1079,81 @@ static void purge_stale_links(host_t *h)
     }
 }
 
+/* The system's own connections, as far as PadBridge sees them: its
+ * events about them are otherwise dropped. A limited number of lines. */
+static int other_line(host_t *h)
+{
+    if (h->other_logged >= OTHER_LOG_MAX) return 0;
+    if (++h->other_logged == OTHER_LOG_MAX)
+        log_line("chip: no more lines about other connections this run");
+    return 1;
+}
+
+/* A chip setting from a read's Command Complete, logged when it changes.
+ * The system's driver may read or change them too. */
+static void on_setting(host_t *h, unsigned op, const unsigned char *ev, int len)
+{
+    int k, v;
+    unsigned a = 0, b = 0;
+
+    if (len < 7 || ev[5] != 0) return;
+    switch (op) {
+    case OP_READ_PAGE_TIMEOUT:
+        if (len < 8) return;
+        k = 0; a = le16(ev + 6); v = (int)a;
+        break;
+    case OP_READ_PAGE_SCAN_ACT:
+    case OP_READ_INQ_SCAN_ACT:
+        if (len < 10) return;
+        k = op == OP_READ_PAGE_SCAN_ACT ? 1 : 2;
+        a = le16(ev + 6); b = le16(ev + 8); v = (int)(a << 16 | b);
+        break;
+    case OP_READ_PAGE_SCAN_TYPE: k = 3; a = ev[6]; v = (int)a; break;
+    case OP_READ_INQUIRY_MODE:   k = 4; a = ev[6]; v = (int)a; break;
+    case OP_READ_SCAN_ENABLE:    k = 5; a = ev[6]; v = (int)a; break;
+    default: return;
+    }
+    if (h->setting[k] == v) return;
+    h->setting[k] = v;
+    switch (k) {
+    case 0: log_line("controller: page timeout %u slots (%u ms)", a, a * 5 / 8); break;
+    case 1: log_line("controller: page scan every %u ms for %u ms", a * 5 / 8, b * 5 / 8); break;
+    case 2: log_line("controller: inquiry scan every %u ms for %u ms", a * 5 / 8, b * 5 / 8); break;
+    case 3: log_line("controller: page scan type %u (%s)", a, a ? "interlaced" : "standard"); break;
+    case 4: log_line("controller: inquiry mode %u (%s)", a,
+                     a == 0 ? "standard" : a == 1 ? "with RSSI" : "extended"); break;
+    default: log_line("controller: scan enable %#x", a); break;
+    }
+}
+
+/* Sums up what PadBridge saw of the chip's traffic, every T_CHIP_STATS
+ * while pairing or linking: event counts by code, ACL packets for our
+ * links and for others, and commands by opcode as sent by us / answered
+ * (to anyone: a reply to a command we never sent is the system's). */
+static void chip_stats(host_t *h, long now, int active)
+{
+    char line[768];
+    int i, n = 0, any = 0;
+
+    if (!h->st.t0) h->st.t0 = now;
+    if (now - h->st.t0 < T_CHIP_STATS) return;
+    for (i = 0; i < 256; i++) any |= h->st.ev[i];
+    any |= h->st.acl_ours | h->st.acl_other | h->st.n_cmd;
+    if (active && any) {
+        n += snprintf(line + n, sizeof line - (size_t)n, "chip, last %ld s: events", (now - h->st.t0) / 1000);
+        for (i = 0; i < 256 && n < (int)sizeof line - 32; i++)
+            if (h->st.ev[i]) n += snprintf(line + n, sizeof line - (size_t)n, " %02x:%d", i, h->st.ev[i]);
+        n += snprintf(line + n, sizeof line - (size_t)n, "; ACL ours %d, others %d; commands sent/answered",
+                      h->st.acl_ours, h->st.acl_other);
+        for (i = 0; i < h->st.n_cmd && n < (int)sizeof line - 32; i++)
+            n += snprintf(line + n, sizeof line - (size_t)n, " %04x:%d/%d",
+                          h->st.cmd[i].op, h->st.cmd[i].sent, h->st.cmd[i].answered);
+        log_line("%s", line);
+    }
+    memset(&h->st, 0, sizeof h->st);
+    h->st.t0 = now;
+}
+
 static void on_event(host_t *h, const unsigned char *ev, int len)
 {
     unsigned char p[32];
@@ -1066,6 +1161,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     int i;
 
     if (len < 2) return;
+    h->st.ev[ev[0]]++;
     switch (ev[0]) {
     case 0x01:  /* Inquiry Complete */
         log_line("inquiry: finished (status %#04x)", len > 2 ? ev[2] : 0xFF);
@@ -1093,10 +1189,15 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x04:  /* Connection Request: addr, class, link type */
-        if (len < 12 || ev[11] != 1) break;
+        if (len < 12) break;
         {
             db_rec *r = db_find(h, ev + 2);
-            if (!r || r->le || link_by_addr(h, ev + 2)) break;      /* not ours */
+            if (ev[11] != 1 || !r || r->le || link_by_addr(h, ev + 2)) {     /* not ours */
+                if (other_line(h))
+                    log_line("chip: connection request from %s, class %06x, link type %u (not ours)",
+                             addr_str(ev + 2), (unsigned)(ev[8] | ev[9] << 8 | ev[10] << 16), ev[11]);
+                break;
+            }
         }
         log_line("pad %s: asks to connect, accepting", addr_str(ev + 2));
         l = link_new(h, ev + 2);
@@ -1126,7 +1227,13 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x03:  /* Connection Complete: status, handle, addr, type, enc */
-        if (len < 13 || !(l = link_by_addr(h, ev + 5)) || l->connected) break;
+        if (len < 13) break;
+        if (!(l = link_by_addr(h, ev + 5)) || l->connected) {
+            if (other_line(h))
+                log_line("chip: connection complete for %s, status %#04x, handle %#05x, link type %u (no link of ours)",
+                         addr_str(ev + 5), ev[2], le16(ev + 3) & 0x0FFF, ev[11]);
+            break;
+        }
         if (ev[2] != 0) {
             log_line("pad %s: connection failed (status %#04x)", addr_str(l->addr), ev[2]);
             if (ev[2] == 0x04 && page_again(h, l)) break;
@@ -1143,7 +1250,13 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x05:  /* Disconnection Complete: status, handle, reason */
-        if (len < 6 || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        if (len < 6) break;
+        if (!(l = link_by_handle(h, le16(ev + 3)))) {
+            if (other_line(h))
+                log_line("chip: handle %#05x disconnected, status %#04x, reason %#04x (no link of ours)",
+                         le16(ev + 3) & 0x0FFF, ev[2], ev[5]);
+            break;
+        }
         log_line("pad %s: disconnected (reason %#04x); ACL sent %d, reported sent %d, received %d",
                  addr_str(l->addr), ev[5], l->n_tx, l->n_tx_done, l->n_rx);
         link_free(h, l);
@@ -1189,6 +1302,8 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         h->cc_op = le16(ev + 3);
         h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
         memcpy(h->cc, ev, (size_t)h->cc_len);
+        stats_cmd(h, h->cc_op, 0);
+        on_setting(h, h->cc_op, ev, len);
         if (h->cc_op == OP_PIN_CODE_REPLY && len >= 12 && (l = link_by_addr(h, ev + 6)))
             log_line("pad %s: controller took the PIN reply (status %#04x)", addr_str(l->addr), ev[5]);
         if (h->cc_op == OP_READ_RSSI && len >= 9 && ev[5] == 0 && (l = link_by_handle(h, le16(ev + 6))))
@@ -1197,6 +1312,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x0F:  /* Command Status: status, credits, opcode */
+        if (len >= 6) stats_cmd(h, le16(ev + 4), 0);
         if (len >= 6 && le16(ev + 4) == OP_INQUIRY) {
             log_line("inquiry: controller answered status %#04x", ev[2]);
             if (ev[2] != 0) h->inquiring = 0;
@@ -1560,6 +1676,8 @@ void host_poll(host_t *h, int timeout_ms)
         h->probes = 0;
     }
 
+    chip_stats(h, now, now < h->pair_until || linking);
+
     /* Keep searching through the pairing window, one pad at a time. */
     if (now < h->pair_until && !h->inquiring && !linking) start_inquiry(h);
     if (now >= h->pair_until && h->inquiring) {
@@ -1572,6 +1690,9 @@ int host_pair(host_t *h, int seconds)
 {
     h->pair_until = now_ms() + (long)seconds * 1000;
     log_line("pairing: searching for %d s", seconds);
+    /* Logged if the system changed them since setup. */
+    send_cmd(h, OP_READ_PAGE_TIMEOUT, NULL, 0);
+    send_cmd(h, OP_READ_SCAN_ENABLE, NULL, 0);
     return 1;
 }
 
@@ -1726,6 +1847,7 @@ static int setup(host_t *h)
     unsigned char scan[1];
 
     h->scan_orig = h->scan_set = -1;
+    for (int k = 0; k < 6; k++) h->setting[k] = -1;
     if (!hci_sync(h, OP_READ_BUFFER_SIZE, NULL, 0) || h->cc_len < 13) return 0;
     h->acl_mtu = le16(h->cc + 6);
     h->br.credits = h->br.max = (int)le16(h->cc + 9);
@@ -1744,6 +1866,13 @@ static int setup(host_t *h)
         h->scan_set = scan[0];
         log_line("controller: page scan turned on (was %#x)", h->scan_orig);
     }
+
+    /* For the log: what paging and scanning get of the radio. */
+    hci_sync(h, OP_READ_PAGE_TIMEOUT, NULL, 0);
+    hci_sync(h, OP_READ_PAGE_SCAN_ACT, NULL, 0);
+    hci_sync(h, OP_READ_PAGE_SCAN_TYPE, NULL, 0);
+    hci_sync(h, OP_READ_INQ_SCAN_ACT, NULL, 0);
+    hci_sync(h, OP_READ_INQUIRY_MODE, NULL, 0);
 
     if (hci_sync(h, OP_READ_BD_ADDR, NULL, 0) && h->cc_len >= 12) memcpy(h->bdaddr, h->cc + 6, 6);
     log_line("controller address %s", addr_str(h->bdaddr));
@@ -1786,6 +1915,7 @@ host_t *host_open(hci_t hci, const char *db_path, const host_events *ev)
         free(h);
         return NULL;
     }
+    memset(&h->st, 0, sizeof h->st);    /* summaries start after setup */
     return h;
 }
 

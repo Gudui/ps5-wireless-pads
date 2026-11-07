@@ -38,6 +38,11 @@
 #define OP_READ_BD_ADDR         0x1009
 #define OP_READ_SCAN_ENABLE     0x0C19
 #define OP_READ_SSP_MODE        0x0C55
+#define OP_READ_PAGE_TIMEOUT    0x0C17
+#define OP_READ_PAGE_SCAN_ACT   0x0C1B
+#define OP_READ_INQ_SCAN_ACT    0x0C1D
+#define OP_READ_INQUIRY_MODE    0x0C44
+#define OP_READ_PAGE_SCAN_TYPE  0x0C46
 
 #define CID_SIGNALING   0x0001
 #define PSM_SDP         0x0001
@@ -89,6 +94,9 @@
 #define T_SETUP_TIMEOUT 30000   /* connection to ready */
 #define T_CHAN_CONNECT  2500
 #define T_CHAN_PENDING 10000    /* after a "pending" connection response */
+#define T_CHIP_STATS    5000    /* the chip's traffic is summed up this often while pairing */
+#define CHIP_CMDS         24    /* distinct opcodes counted per summary */
+#define OTHER_LOG_MAX     64    /* lines about the system's own connections, per run */
 #define RX_LOG_MAX        24    /* inbound frames logged per link before ready */
 #define T_CFG_RESEND    1200
 #define CFG_TRIES          6
@@ -296,6 +304,18 @@ struct host {
     int scan_orig, scan_set; /* page scan as found, and as we set it (-1: untouched) */
     long last_rx, probe_at; /* liveness: anything heard, last probe */
     int probes;
+
+    /* What PadBridge sees of the chip's traffic, its own and the system's,
+     * summed up every T_CHIP_STATS while pairing or linking. */
+    struct {
+        long t0;
+        int ev[256];
+        int acl_ours, acl_other;
+        struct { unsigned op; int sent, answered; } cmd[CHIP_CMDS];
+        int n_cmd;
+    } st;
+    int other_logged;               /* lines about others' connections */
+    int setting[6];                 /* chip settings last logged, -1: none yet */
 };
 
 

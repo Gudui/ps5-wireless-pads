@@ -1,6 +1,7 @@
 /* End-to-end PIN selection through discovery, name lookup and authentication. */
 #include "sim.h"
 #include "../src/host.h"
+#include "../src/log.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -128,8 +129,73 @@ static void check_wii_ready(int wii, int trouble)
     host_close(host); sim_free(sim);
     unlink("build/test_wii_pads.db");
 }
+/* The chip's settings, the system's own connections and a summary of the
+ * chip's traffic reach the log. */
+static void check_chip_log(void)
+{
+    static const char *want[] = {
+        "controller: page timeout 8192 slots (5120 ms)",
+        "controller: page scan every 1280 ms for 11 ms",
+        "controller: inquiry scan every 1280 ms for 11 ms",
+        "controller: page scan type 0 (standard)",
+        "controller: inquiry mode 2 (extended)",
+        "chip: connection request from ", ", class 002508, link type 1 (not ours)",
+        "chip: connection complete for ", ", status 0x3e, handle 0x00b, link type 1 (no link of ours)",
+        "chip: handle 0x00b disconnected, status 0x16, reason 0x13 (no link of ours)",
+        "chip, last 5 s: events ",
+        " 04:1 ", " 05:1 ",
+        "; ACL ours 0, others 1;",
+        " fc6f:0/1",                    /* a command of the system's, answered to it */
+        " 0401:1/1",                    /* our inquiry */
+    };
+    static const unsigned char other[6] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
+    unsigned char e[16], data[4] = { 0, 0, 0x40, 0 };
+    sim_pad pad = {0};
+    sim_t *sim;
+    host_t *host;
+    char text[16384];
+    size_t n;
+    FILE *f;
+    long end;
+
+    unlink("build/test_wii_pads.db");
+    unlink("build/test_chip.log");
+    pad.mode = SIM_RECONNECT;           /* stays off: only others' traffic */
+    pad.addr[0] = 0xfd; pad.addr[1] = 0x4e;
+    log_open("build/test_chip.log");
+    sim = sim_new(&pad);
+    host = host_open(sim_hci(sim), "build/test_wii_pads.db", NULL);
+    CHECK(host != NULL);
+    if (!host) { log_close(); sim_free(sim); return; }
+    host_pair(host, 30);
+    memcpy(e, other, 6); e[6] = 0x08; e[7] = 0x25; e[8] = 0x00; e[9] = 1;
+    sim_inject_event(sim, 0x04, e, 10);                 /* Connection Request */
+    memset(e, 0, sizeof e);
+    e[0] = 0x3E; e[1] = 0x0B; memcpy(e + 3, other, 6); e[9] = 1;
+    sim_inject_event(sim, 0x03, e, 11);                 /* Connection Complete */
+    e[0] = 0x16; e[1] = 0x0B; e[2] = 0x00; e[3] = 0x13;
+    sim_inject_event(sim, 0x05, e, 4);                  /* Disconnection Complete */
+    e[0] = 1; e[1] = 0x6F; e[2] = 0xFC; e[3] = 0;
+    sim_inject_event(sim, 0x0E, e, 4);                  /* the system's vendor command */
+    sim_inject_acl(sim, 0x40, data, 4);              /* someone's link's data */
+    end = sim_now() + 6000;
+    while (sim_now() < end) host_poll(host, 5);
+    host_close(host); sim_free(sim);
+    log_close();
+    f = fopen("build/test_chip.log", "r");
+    CHECK(f != NULL);
+    if (!f) return;
+    n = fread(text, 1, sizeof text - 1, f);
+    text[n] = 0;
+    fclose(f);
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++)
+        if (!strstr(text, want[i])) { printf("FAIL: log lacks \"%s\"\n", want[i]); failed++; }
+    unlink("build/test_wii_pads.db");
+    unlink("build/test_chip.log");
+}
 int main(void)
 {
+    check_chip_log();
     check_wii_ready(1, 0);
     check_wii_ready(2, 0);
     check_wii_ready(1, 1);
