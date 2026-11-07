@@ -918,11 +918,43 @@ static int wii_remote_name(const unsigned char *name, int length)
 
 static void page_pad(host_t *h, link_t *l)
 {
+    const unsigned char *c = l->create_params;
+    unsigned offset = le16(c + 10);
+
     l->paging = 1;
     l->page_started = 0;
     l->t_create = now_ms();
     send_cmd(h, OP_CREATE_CONNECTION, l->create_params, sizeof l->create_params);
-    log_line("pad %s: connecting to pair", addr_str(l->addr));
+    if (offset & 0x8000)
+        log_line("pad %s: connecting to pair (scan mode R%u, clock offset %#06x)",
+                 addr_str(l->addr), c[8], offset & 0x7FFF);
+    else
+        log_line("pad %s: connecting to pair (scan mode R%u, no clock offset)", addr_str(l->addr), c[8]);
+}
+
+/* A page that timed out while pairing is tried again at once, rather than
+ * after the next inquiry finds the pad (up to 10 s of a Wii Remote's ~20 s
+ * red-Sync window). Each retry flips between the inquiry's scan mode and
+ * clock offset and the most patient settings: R2, no clock offset. */
+static int page_again(host_t *h, link_t *l)
+{
+    unsigned char *c = l->create_params;
+
+    if (!l->pairing || l->page_tries >= PAGE_RETRIES || now_ms() >= h->pair_until) return 0;
+    l->page_tries++;
+    if (l->page_tries & 1) {
+        l->page_mode = c[8];
+        l->page_offset = le16(c + 10);
+        c[8] = 0x02;
+        put16(c + 10, 0);
+    } else {
+        c[8] = l->page_mode;
+        put16(c + 10, l->page_offset);
+    }
+    log_line("pad %s: page timed out, paging again at once (retry %d of %d)",
+             addr_str(l->addr), l->page_tries, PAGE_RETRIES);
+    page_pad(h, l);
+    return 1;
 }
 
 static void pair_with(host_t *h, const unsigned char *rec)
@@ -975,8 +1007,18 @@ static void ask_name(host_t *h, link_t *l)
     if (!send_cmd(h, OP_REMOTE_NAME_REQ, p, 10)) l->name_pending = 0;
 }
 
+/* The link's signal, for telling a weak radio link from a silent pad. */
+static void read_rssi(host_t *h, link_t *l)
+{
+    unsigned char p[2];
+
+    put16(p, l->handle);
+    send_cmd(h, OP_READ_RSSI, p, 2);
+    l->t_rssi = now_ms();
+}
+
 /* An inquiry record: addr 6, page scan mode 1, reserved 1, class 3,
- * clock offset 2, RSSI 1. */
+ * clock offset 2, RSSI 1 (RSSI_NONE from a plain Inquiry Result). */
 static void on_found(host_t *h, const unsigned char *rec)
 {
     uint32_t cod = (uint32_t)rec[8] | (uint32_t)rec[9] << 8 | (uint32_t)rec[10] << 16;
@@ -986,7 +1028,10 @@ static void on_found(host_t *h, const unsigned char *rec)
         log_line("inquiry: %s class %06x is not a gamepad, ignored", addr_str(rec), (unsigned)cod);
         return;
     }
-    log_line("found gamepad %s (class %06x)", addr_str(rec), (unsigned)cod);
+    if (rec[13] == RSSI_NONE)
+        log_line("found gamepad %s (class %06x), no RSSI in this inquiry mode", addr_str(rec), (unsigned)cod);
+    else
+        log_line("found gamepad %s (class %06x), RSSI %d dBm", addr_str(rec), (unsigned)cod, (int)(signed char)rec[13]);
     pair_with(h, rec);
 }
 
@@ -1033,7 +1078,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             memcpy(rec, r, 7);          /* to the RSSI layout on_found reads */
             rec[7] = 0;
             memcpy(rec + 8, r + 9, 5);
-            rec[13] = 0;
+            rec[13] = RSSI_NONE;
             on_found(h, rec);
         }
         break;
@@ -1081,6 +1126,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (len < 13 || !(l = link_by_addr(h, ev + 5)) || l->connected) break;
         if (ev[2] != 0) {
             log_line("pad %s: connection failed (status %#04x)", addr_str(l->addr), ev[2]);
+            if (ev[2] == 0x04 && page_again(h, l)) break;
             link_free(h, l);
             break;
         }
@@ -1089,6 +1135,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         l->handle = le16(ev + 3) & 0x0FFF;
         l->t_conn = now_ms();
         log_line("pad %s: connected, handle %#05x", addr_str(l->addr), l->handle);
+        read_rssi(h, l);
         if (l->pairing) ask_name(h, l);
         break;
 
@@ -1139,6 +1186,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         h->cc_op = le16(ev + 3);
         h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
         memcpy(h->cc, ev, (size_t)h->cc_len);
+        if (h->cc_op == OP_PIN_CODE_REPLY && len >= 12 && (l = link_by_addr(h, ev + 6)))
+            log_line("pad %s: controller took the PIN reply (status %#04x)", addr_str(l->addr), ev[5]);
+        if (h->cc_op == OP_READ_RSSI && len >= 9 && ev[5] == 0 && (l = link_by_handle(h, le16(ev + 6))))
+            log_line("pad %s: link RSSI %d", addr_str(l->addr), (int)(signed char)ev[8]);
         le_on_cmd_complete(h, h->cc_op, ev[5]);
         break;
 
@@ -1294,6 +1345,7 @@ static void link_step(host_t *h, link_t *l, long now)
         link_disconnect(h, l, "setup did not finish");
         return;
     }
+    if (!l->ready && now - l->t_rssi >= T_RSSI) read_rssi(h, l);
 
     /* A pad being paired is asked its name first: the PIN depends on it. */
     if (l->name_pending) {

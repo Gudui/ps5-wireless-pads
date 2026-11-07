@@ -21,6 +21,7 @@
 #define OP_LINK_KEY_REPLY       0x040B
 #define OP_LINK_KEY_NEG_REPLY   0x040C
 #define OP_PIN_CODE_REPLY       0x040D
+#define OP_READ_RSSI            0x1405
 #define OP_AUTH_REQUESTED       0x0411
 #define OP_REMOTE_NAME_REQ      0x0419
 #define OP_REMOTE_NAME_CANCEL   0x041A
@@ -73,6 +74,9 @@
 #define T_SELF_CHANNELS 1200    /* ... and open its own HID channels */
 #define T_INTR_AFTER     500    /* interrupt channel after control */
 #define T_CONN_TIMEOUT 20000    /* paging a pad */
+#define PAGE_RETRIES       2    /* a page timed out while pairing: page again at once */
+#define T_RSSI          3000    /* the link's RSSI is logged this often until ready */
+#define RSSI_NONE       0x7F    /* an inquiry result without RSSI (127: not available) */
 /* A pad being paired is asked its name over the new link before it is
  * authenticated. Past this, cancel the request and authenticate once the
  * controller confirms, or after the wait, with the existing PIN policy. */
@@ -197,6 +201,9 @@ typedef struct {
     int name_pending, name_cancelled, wii_remote;
     long t_name;
     int paging, page_started;       /* Create Connection sent; and accepted */
+    int page_tries;                 /* immediate retries after a page timeout */
+    unsigned page_mode, page_offset;    /* the inquiry's settings, while a retry uses others */
+    long t_rssi;
     unsigned char create_params[13];
     int auth_sent, auth_ok, enc_sent, enc_on;
     long t_auth_ok, t_secure;

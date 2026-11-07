@@ -70,9 +70,11 @@ static void on_state(void *ud, int slot, const pad_state *st)
  * guitar's frets and strum reaching the pad state. wii: 1 guitar, 2 none.
  * trouble: 1 the answer to the first HID channel request is lost and a
  * repeat with the same cid ignored; 2 channel requests answered "pending"
- * for 4 s. */
+ * for 4 s; 3 the first page times out, 4 the first two do: paged again at
+ * once, first with R2 and no clock offset, then with the inquiry's. */
 static void check_wii_ready(int wii, int trouble)
 {
+    unsigned mode, offset;
     sim_pad pad = {0};
     seen s = {0};
     host_events events = { on_connect, on_state, NULL, &s, NULL };
@@ -90,6 +92,7 @@ static void check_wii_ready(int wii, int trouble)
     pad.wii = wii;
     pad.lose_first_hid_rsp = pad.ignore_repeat_cid = trouble == 1;
     pad.pending_ms = trouble == 2 ? 4000 : 0;
+    pad.page_timeouts = trouble == 3 ? 1 : trouble == 4 ? 2 : 0;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -102,8 +105,12 @@ static void check_wii_ready(int wii, int trouble)
     CHECK(host != NULL);
     if (!host) { sim_free(sim); return; }
     host_pair(host, 60);
-    end = sim_now() + 20000;
+    end = sim_now() + 20000 + 15000 * pad.page_timeouts;
     while (sim_now() < end) host_poll(host, 5);
+    CHECK(sim_pages(sim) == 1 + pad.page_timeouts);
+    sim_last_page(sim, &mode, &offset);
+    if (trouble == 3) CHECK(mode == 2 && offset == 0);
+    else CHECK(offset & 0x8000);
     CHECK(s.connects == 1);
     CHECK(s.info.vid == 0x057e && s.info.pid == 0x0306);
     CHECK(s.info.profile && !strcmp(s.info.profile, "Wii Remote"));
@@ -121,6 +128,8 @@ int main(void)
     check_wii_ready(2, 0);
     check_wii_ready(1, 1);
     check_wii_ready(1, 2);
+    check_wii_ready(1, 3);
+    check_wii_ready(1, 4);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);

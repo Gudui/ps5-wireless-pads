@@ -52,6 +52,9 @@ struct sim {
     int name_busy, page_busy, pages;
     int refused, page_cancels, name_cancels;
     int names, names_unlinked;      /* name requests; those before a link */
+    int page_timeouts;              /* pages ended with status 0x04 so far */
+    long page_fail_at;              /* when the running page times out, 0: none */
+    unsigned last_page_mode, last_page_offset;
 };
 
 static long g_clock = 1000;
@@ -480,9 +483,22 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         }
         cmd_status(s, op, 0);
         if (memcmp(p, s->pad.addr, 6) != 0) break;
+        s->last_page_mode = p[8];
+        s->last_page_offset = (unsigned)le16(p + 10);
         if (s->pages++ < s->pad.unanswered_pages) { s->page_busy = 1; break; }
+        if (s->page_timeouts < s->pad.page_timeouts) {
+            s->page_timeouts++;
+            s->page_busy = 1;
+            s->page_fail_at = g_clock + 15000;  /* the controller's page timeout */
+            break;
+        }
         conn_complete(s);
         break;
+    case 0x1405: {      /* Read RSSI */
+        unsigned char r[4] = { 0, p[0], p[1], (unsigned char)-48 };
+        cmd_complete(s, op, r, 4);
+        break;
+    }
     case 0x0408: {      /* Create Connection Cancel */
         unsigned char r[7] = { 0 }, c[11] = { 0 };
         memcpy(r + 1, p, 6);
@@ -492,6 +508,7 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
             break;
         }
         s->page_busy = 0;
+        s->page_fail_at = 0;
         s->page_cancels++;
         cmd_complete(s, op, r, 7);
         c[0] = 0x02;                    /* the page's end, as cancelled */
@@ -537,7 +554,11 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         if (plen == 23) memcpy(s->last_pin, p, 23);
         if (s->pad.legacy_pin == 1) ok = ok && p[6] == 6 && !memcmp(p + 7, wii_pin, 6);
         else ok = ok && p[6] == 4 && !memcmp(p + 7, "0000", 4);
-        cmd_ok(s, op);
+        {
+            unsigned char r[7] = { 0 };     /* status, address */
+            if (plen >= 6) memcpy(r + 1, p, 6);
+            cmd_complete(s, op, r, 7);
+        }
         if (ok) { new_key(s); s->auth_successes++; }
         ev_handle(s, 0x06, ok ? 0 : 5, 0, 0);
         break;
@@ -700,6 +721,14 @@ static int op_pump(void *ctx, int timeout_ms)
 
     g_clock += timeout_ms > 0 ? timeout_ms : 1;
     if (s->deaf) return 0;
+    if (s->page_fail_at && g_clock >= s->page_fail_at) {
+        unsigned char c[11] = { 0x04 };     /* page timeout */
+        s->page_fail_at = 0;
+        s->page_busy = 0;
+        memcpy(c + 3, s->pad.addr, 6);
+        c[9] = 1;
+        event(s, 0x03, c, 11);
+    }
     pad_step(s);
     return s->ev.count || s->acl.count;
 }
@@ -843,3 +872,9 @@ int sim_page_cancels(const sim_t *s) { return s->page_cancels; }
 int sim_name_cancels(const sim_t *s) { return s->name_cancels; }
 int sim_names(const sim_t *s) { return s->names; }
 int sim_names_unlinked(const sim_t *s) { return s->names_unlinked; }
+int sim_pages(const sim_t *s) { return s->pages; }
+void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
+{
+    *mode = s->last_page_mode;
+    *offset = s->last_page_offset;
+}
