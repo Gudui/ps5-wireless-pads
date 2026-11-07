@@ -58,6 +58,8 @@ struct sim {
     int lost_event, enc_requests, refused_chans;
     unsigned ps_int, ps_win, ps_type;   /* page scan activity and type */
     int busy_pages;
+    int inquiries, inquiry_cancels;
+    long last_inquiry_at;
     long enc_at;                    /* encryption comes on then, 0: not starting */
     queue held;                     /* the host's ACL data until then */
 };
@@ -464,6 +466,10 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         cmd_complete(s, op, r, 5);
         break;
     }
+    case 0x0402:        /* Inquiry Cancel */
+        s->inquiry_cancels++;
+        cmd_ok(s, op);
+        break;
     case 0x0C1C:        /* Write Page Scan Activity */
         s->ps_int = le16(p);
         s->ps_win = le16(p + 2);
@@ -518,6 +524,8 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
     }
     case 0x0401:        /* Inquiry */
         cmd_status(s, op, 0);
+        s->inquiries++;
+        s->last_inquiry_at = g_clock;
         if (s->pad.mode == SIM_WAIT_PAIRING && !s->connected) {
             unsigned char r[255] = { 0 };
             r[0] = 1;
@@ -973,6 +981,10 @@ void sim_page_scan(const sim_t *s, unsigned *interval, unsigned *window, unsigne
     *interval = s->ps_int; *window = s->ps_win; *type = s->ps_type;
 }
 int sim_busy_pages(const sim_t *s) { return s->busy_pages; }
+int sim_inquiries(const sim_t *s) { return s->inquiries; }
+int sim_inquiry_cancels(const sim_t *s) { return s->inquiry_cancels; }
+long sim_last_inquiry_at(const sim_t *s) { return s->last_inquiry_at; }
+void sim_set_mode(sim_t *s, sim_mode mode) { s->pad.mode = mode; }
 void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
 {
     *mode = s->last_page_mode;

@@ -854,6 +854,13 @@ void link_ready(host_t *h, link_t *l)
     info.profile = l->prof->name;
     memcpy(info.addr, l->addr, 6);
     log_line("pad %s: ready as %s in slot %d", addr_str(l->addr), l->prof->name, slot_of(h, l));
+    /* One pad per pairing window: an inquiry takes the radio from the new
+     * link (a Wii Remote dropped 3 s after it was ready, while the search
+     * for more pads went on). */
+    if (l->pairing && !l->le && now_ms() < h->pair_until) {
+        h->pair_until = now_ms();
+        log_line("pairing: done, search stopped");
+    }
     if (h->ev.on_connect) h->ev.on_connect(h->ev.ud, slot_of(h, l), &info);
 }
 
@@ -1763,8 +1770,10 @@ void host_poll(host_t *h, int timeout_ms)
             l->out.strong = l->out.weak = 0;
             send_output(h, l);
         }
-        if (h->links[i].used && h->links[i].pairing && !h->links[i].ready &&
-            !h->links[i].le) linking = 1;
+        /* Any pad being set up, paired or reconnecting: an inquiry would
+         * take the radio its authentication needs (a Wii Remote dropped
+         * every reconnect after 3 s until the search ended). */
+        if (h->links[i].used && !h->links[i].ready && !h->links[i].le) linking = 1;
     }
     le_poll(h, now);
 
@@ -1786,7 +1795,13 @@ void host_poll(host_t *h, int timeout_ms)
     if (!linking) page_scan_restore(h, 0);
     chip_stats(h, now, now < h->pair_until || linking);
 
-    /* Keep searching through the pairing window, one pad at a time. */
+    /* Keep searching through the pairing window, one pad at a time, and
+     * never while a pad is being set up. */
+    if (linking && h->inquiring) {
+        send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
+        h->inquiring = 0;
+        log_line("inquiry: paused while a pad connects");
+    }
     if (now < h->pair_until && !h->inquiring && !linking) start_inquiry(h);
     if (now >= h->pair_until && h->inquiring) {
         send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);

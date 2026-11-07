@@ -206,14 +206,20 @@ static uint64_t hex_after(const char *s, const char *key)
     return v;
 }
 
-/* A virtual DualSense appearing:
+/* A DualSense appearing, in either wording seen:
  *   SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x...][type:1][subType:22]
  *   [capabilityBattery:0]...
- * A real pad reports a battery, so a line saying otherwise is not ours. */
-static uint64_t virtual_device_in(const char *line)
+ * where a real pad reports a battery, so a line saying otherwise is not
+ * ours; and, on firmware 5.50, with no battery to tell them apart:
+ *   [Umm] processMbusEvent() event=DEVICE_ADDED deviceId=0x... deviceType=22 userId=0x0(0)
+ * Either way only one such line between AddDevice and a few seconds later
+ * is taken as ours. */
+uint64_t vpad_device_in_line(const char *line)
 {
     const char *bat;
 
+    if (strstr(line, "event=DEVICE_ADDED") && strstr(line, "deviceType=22 "))
+        return hex_after(line, "deviceId");
     if (!strstr(line, "DEVICE_ADDED") || !strstr(line, "type:1") || !strstr(line, "subType:22"))
         return 0;
     bat = strstr(line, "capabilityBattery:");
@@ -239,7 +245,7 @@ static void log_source_read(void)
             g_line[g_line_len] = '\0';
             g_line_len = 0;
             if (g_log_is_dev) log_line("klog: %s", g_line);  /* kept, not lost */
-            dev = virtual_device_in(g_line);
+            dev = vpad_device_in_line(g_line);
             if (!dev || g_pending < 0) continue;
             if (g_matches == 0) {
                 g_match_dev = dev;

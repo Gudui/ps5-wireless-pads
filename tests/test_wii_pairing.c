@@ -57,10 +57,12 @@ static void check_pair(const char *name, int no_name, int name_status, int legac
     host_close(host); sim_free(sim);
     unlink("build/test_wii_pads.db");
 }
-typedef struct { int connects, states; pad_info info; pad_state last; } seen;
+typedef struct { int connects, states; pad_info info; pad_state last; long t_ready; int inq_at_ready; } seen;
+static sim_t *g_sim;                    /* for on_connect: inquiries so far */
 static void on_connect(void *ud, int slot, const pad_info *info)
 {
-    seen *s = ud; (void)slot; s->connects++; s->info = *info;
+    seen *s = ud; (void)slot; s->connects++; s->info = *info; s->t_ready = sim_now();
+    s->inq_at_ready = g_sim ? sim_inquiries(g_sim) : 0;
 }
 static void on_state(void *ud, int slot, const pad_state *st)
 {
@@ -116,6 +118,7 @@ static void check_wii_ready(int wii, int trouble)
     pad.report[8] = (unsigned char)~0x10;                                   /* green */
     pad.report_len = 11;
     sim = sim_new(&pad);
+    g_sim = sim;
     host = host_open(sim_hci(sim), "build/test_wii_pads.db", &events);
     CHECK(host != NULL);
     if (!host) { sim_free(sim); return; }
@@ -146,7 +149,29 @@ static void check_wii_ready(int wii, int trouble)
     if (wii == 1) CHECK(s.last.buttons == (PAD_CROSS | PAD_DOWN));
     else CHECK(s.last.buttons == PAD_CROSS);
     CHECK(sim_last_output(sim, (unsigned char[32]){0}, 32) == 4);           /* 0xA2 0x12 0x04 0x32 */
+    /* Paired: the search stops, no inquiry after it. */
+    CHECK(sim_last_inquiry_at(sim) < s.t_ready);
+    if (trouble == 0) {
+        /* Switched off, then on again by a button while another pairing
+         * window searches: the running inquiry is cancelled and none is
+         * started until the remote is ready again. */
+        int inq, cancels;
+        sim_disconnect(sim);
+        sim_set_mode(sim, SIM_RECONNECT);
+        for (end = sim_now() + 500; sim_now() < end;) host_poll(host, 5);
+        host_pair(host, 60);
+        for (end = sim_now() + 500; sim_now() < end;) host_poll(host, 5);
+        inq = sim_inquiries(sim);
+        cancels = sim_inquiry_cancels(sim);
+        CHECK(inq >= 2);                            /* searching again */
+        sim_power_on(sim);
+        for (end = sim_now() + 10000; sim_now() < end && s.connects < 2;) host_poll(host, 5);
+        CHECK(s.connects == 2);
+        CHECK(sim_inquiry_cancels(sim) > cancels);  /* the search paused */
+        CHECK(s.inq_at_ready == inq);               /* none while it connected */
+    }
     host_close(host); sim_free(sim);
+    g_sim = NULL;
     unlink("build/test_wii_pads.db");
 }
 /* The chip's settings, the system's own connections and a summary of the

@@ -118,6 +118,10 @@ int    sim_refused_chans(const sim_t *s);  /* HID channel requests refused as a 
 int    sim_ctrl_reqs(const sim_t *s);      /* HID control-channel requests */
 void   sim_page_scan(const sim_t *s, unsigned *interval, unsigned *window, unsigned *type);
 int    sim_busy_pages(const sim_t *s);     /* pages sent while page scan was busy */
+int    sim_inquiries(const sim_t *s);
+int    sim_inquiry_cancels(const sim_t *s);
+long   sim_last_inquiry_at(const sim_t *s);
+void   sim_set_mode(sim_t *s, sim_mode mode);  /* paired now: reconnects by itself */
 void   sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset);   /* its scan mode, clock offset */
 
 #endif

@@ -93,6 +93,20 @@ static void reset(int init_result, int priv_after_init)
 
 int main(void)
 {
+    printf("kernel log lines: both wordings of a DualSense being added\n");
+    CHECK(vpad_device_in_line("SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x1000001000000][type:1][subType:22]"
+                              "[capabilityBattery:0]") == 0x1000001000000ull);
+    CHECK(vpad_device_in_line("SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x1000001000000][type:1][subType:22]"
+                              "[capabilityBattery:1]") == 0);   /* a real pad */
+    CHECK(vpad_device_in_line("<118>[Umm] processMbusEvent() event=DEVICE_ADDED deviceId=0xb030d "
+                              "deviceType=22 userId=0x0(0)") == 0xb030dull);
+    CHECK(vpad_device_in_line("<118>[Umm] processMbusEvent() event=DEVICE_ADDED deviceId=0x9000000000300 "
+                              "deviceType=10 userId=0x0(0)") == 0);             /* not a pad */
+    CHECK(vpad_device_in_line("<118>[Umm] processMbusEvent() event=DEVICE_OWNER_CHANGED deviceId=0x70301 "
+                              "deviceType=22 userId=0x1e5c6ea6(509374118)") == 0);
+    CHECK(vpad_device_in_line("<118>[Umm] processMbusEvent() event=DEVICE_REMOVED deviceId=0xb030d "
+                              "deviceType=22 userId=0x0(0)") == 0);
+
     printf("vpad_init: libScePad is initialised before its privilege is set\n");
     reset(0, 0);
     CHECK(vpad_init() == 1);
