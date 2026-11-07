@@ -56,6 +56,8 @@ struct sim {
     long page_fail_at;              /* when the running page times out, 0: none */
     unsigned last_page_mode, last_page_offset;
     int lost_event, enc_requests, refused_chans;
+    unsigned ps_int, ps_win, ps_type;   /* page scan activity and type */
+    int busy_pages;
     long enc_at;                    /* encryption comes on then, 0: not starting */
     queue held;                     /* the host's ACL data until then */
 };
@@ -455,8 +457,23 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         cmd_complete(s, op, r, 3);
         break;
     }
-    case 0x0C1B:        /* Read Page / Inquiry Scan Activity: 1.28 s, 11.25 ms */
-    case 0x0C1D: {
+    case 0x0C1B: {      /* Read Page Scan Activity */
+        unsigned char r[5] = { 0 };
+        put16(r + 1, s->ps_int);
+        put16(r + 3, s->ps_win);
+        cmd_complete(s, op, r, 5);
+        break;
+    }
+    case 0x0C1C:        /* Write Page Scan Activity */
+        s->ps_int = le16(p);
+        s->ps_win = le16(p + 2);
+        cmd_ok(s, op);
+        break;
+    case 0x0C47:        /* Write Page Scan Type */
+        s->ps_type = p[0];
+        cmd_ok(s, op);
+        break;
+    case 0x0C1D: {      /* Read Inquiry Scan Activity: 1.28 s, 11.25 ms */
         unsigned char r[5] = { 0, 0x00, 0x08, 0x12, 0x00 };
         cmd_complete(s, op, r, 5);
         break;
@@ -466,8 +483,8 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         cmd_complete(s, op, r, 2);
         break;
     }
-    case 0x0C46: {      /* Read Page Scan Type: standard */
-        unsigned char r[2] = { 0, 0 };
+    case 0x0C46: {      /* Read Page Scan Type */
+        unsigned char r[2] = { 0, (unsigned char)s->ps_type };
         cmd_complete(s, op, r, 2);
         break;
     }
@@ -528,6 +545,12 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
         s->last_page_mode = p[8];
         s->last_page_offset = (unsigned)le16(p + 10);
         if (s->pages++ < s->pad.unanswered_pages) { s->page_busy = 1; break; }
+        if (s->ps_type == 1 || s->ps_win * 4 > s->ps_int) {     /* the radio is scanning half the time */
+            s->busy_pages++;
+            s->page_busy = 1;
+            s->page_fail_at = g_clock + 15000;
+            break;
+        }
         if (s->page_timeouts < s->pad.page_timeouts) {
             s->page_timeouts++;
             s->page_busy = 1;
@@ -850,6 +873,9 @@ sim_t *sim_new(const sim_pad *pad)
     s->sdp = (rchan){ .psm = 0x01, .cid = RCID_SDP, .st = RC_CLOSED };
     s->ctrl = (rchan){ .psm = 0x11, .cid = RCID_CTRL, .st = RC_CLOSED };
     s->intr = (rchan){ .psm = 0x13, .cid = RCID_INTR, .st = RC_CLOSED };
+    s->ps_int = pad->busy_page_scan ? 0x029B : 0x0800;
+    s->ps_win = pad->busy_page_scan ? 0x014D : 0x0012;
+    s->ps_type = pad->busy_page_scan ? 1 : 0;
     ph_clock_hook = sim_now;
     return s;
 }
@@ -942,6 +968,11 @@ int sim_pages(const sim_t *s) { return s->pages; }
 int sim_enc_requests(const sim_t *s) { return s->enc_requests; }
 int sim_refused_chans(const sim_t *s) { return s->refused_chans; }
 int sim_ctrl_reqs(const sim_t *s) { return s->ctrl.reqs; }
+void sim_page_scan(const sim_t *s, unsigned *interval, unsigned *window, unsigned *type)
+{
+    *interval = s->ps_int; *window = s->ps_win; *type = s->ps_type;
+}
+int sim_busy_pages(const sim_t *s) { return s->busy_pages; }
 void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
 {
     *mode = s->last_page_mode;

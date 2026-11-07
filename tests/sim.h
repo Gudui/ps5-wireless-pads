@@ -72,6 +72,9 @@ typedef struct {
     /* The first HID control-channel request is answered (success) only
      * this many ms later. */
     int late_rsp_ms;
+    /* The chip's page scan as the PS5's system sets it: 208 ms every
+     * 417 ms, interlaced. While it is that busy, pages time out (15 s). */
+    int busy_page_scan;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -113,6 +116,8 @@ int    sim_pages(const sim_t *s);          /* Create Connections to the pad */
 int    sim_enc_requests(const sim_t *s);   /* Set Connection Encryption commands */
 int    sim_refused_chans(const sim_t *s);  /* HID channel requests refused as a second one */
 int    sim_ctrl_reqs(const sim_t *s);      /* HID control-channel requests */
+void   sim_page_scan(const sim_t *s, unsigned *interval, unsigned *window, unsigned *type);
+int    sim_busy_pages(const sim_t *s);     /* pages sent while page scan was busy */
 void   sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset);   /* its scan mode, clock offset */
 
 #endif

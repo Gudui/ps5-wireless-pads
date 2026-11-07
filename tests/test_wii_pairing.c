@@ -79,7 +79,9 @@ static void on_state(void *ud, int slot, const pad_state *st)
  * meanwhile: asked once, not again under another cid the remote refuses;
  * 8 the first control-channel request is answered after 3 s, past the
  * wait: the late answer is taken, and the second request's refusal does
- * not undo it. Both 7 and 8 refuse a second request, as the remote did. */
+ * not undo it. Both 7 and 8 refuse a second request, as the remote did;
+ * 9 the chip's page scan is as busy as the PS5's system sets it, under
+ * which pages time out: turned down while pairing, put back after. */
 static void check_wii_ready(int wii, int trouble)
 {
     unsigned mode, offset;
@@ -105,6 +107,7 @@ static void check_wii_ready(int wii, int trouble)
     pad.enc_delay_ms = trouble == 7 ? 4000 : 0;
     pad.late_rsp_ms = trouble == 8 ? 3000 : 0;
     pad.refuse_second_req = trouble == 7 || trouble == 8;
+    pad.busy_page_scan = trouble == 9;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -127,6 +130,13 @@ static void check_wii_ready(int wii, int trouble)
     else CHECK(sim_enc_requests(sim) == 1);
     if (trouble == 7) CHECK(sim_ctrl_reqs(sim) == 1 && sim_refused_chans(sim) == 0);
     if (trouble == 8) CHECK(sim_ctrl_reqs(sim) >= 2 && sim_refused_chans(sim) >= 1);
+    {
+        unsigned iv, win, type;
+        CHECK(sim_busy_pages(sim) == 0);
+        sim_page_scan(sim, &iv, &win, &type);
+        if (trouble == 9) CHECK(iv == 0x029B && win == 0x014D && type == 1);  /* put back */
+        else CHECK(iv == 0x0800 && win == 0x0012 && type == 0);             /* never touched */
+    }
     if (trouble == 6) CHECK(sim_names(sim) == 2 && sim_name_cancels(sim) == 0);
     CHECK(s.connects == 1);
     CHECK(s.info.vid == 0x057e && s.info.pid == 0x0306);
@@ -216,6 +226,7 @@ int main(void)
     check_wii_ready(1, 6);
     check_wii_ready(1, 7);
     check_wii_ready(1, 8);
+    check_wii_ready(1, 9);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);

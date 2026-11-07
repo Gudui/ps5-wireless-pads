@@ -978,11 +978,62 @@ static int wii_remote_name(const unsigned char *name, int length)
     return 0;
 }
 
+/* Page scan down to the default while a pad is paged and set up for
+ * pairing, and back to what the system had once no pairing link is left.
+ * Read back after each write: the log shows what the chip took. */
+static void page_scan_low(host_t *h)
+{
+    unsigned char p[4];
+    unsigned iv, win;
+
+    if (h->ps_low || h->ps_act0 < 0) return;
+    iv = (unsigned)h->ps_act0 >> 16;
+    win = (unsigned)h->ps_act0 & 0xFFFF;
+    if (win * 64 <= iv && h->ps_type0 <= 0) return;     /* light already */
+    put16(p, PS_LOW_INTERVAL);
+    put16(p + 2, PS_LOW_WINDOW);
+    send_cmd(h, OP_WRITE_PAGE_SCAN_ACT, p, 4);
+    if (h->ps_type0 > 0) {
+        p[0] = 0;
+        send_cmd(h, OP_WRITE_PAGE_SCAN_TYPE, p, 1);
+    }
+    send_cmd(h, OP_READ_PAGE_SCAN_ACT, NULL, 0);
+    send_cmd(h, OP_READ_PAGE_SCAN_TYPE, NULL, 0);
+    h->ps_low = 1;
+    log_line("controller: page scan turned down to %u ms every %u ms, standard, while pairing (was %u ms every %u ms)",
+             PS_LOW_WINDOW * 5 / 8, PS_LOW_INTERVAL * 5 / 8, win * 5 / 8, iv * 5 / 8);
+}
+
+static void page_scan_restore(host_t *h, int wait)
+{
+    unsigned char p[4];
+
+    if (!h->ps_low) return;
+    h->ps_low = 0;
+    put16(p, (unsigned)h->ps_act0 >> 16);
+    put16(p + 2, (unsigned)h->ps_act0 & 0xFFFF);
+    if (wait) hci_sync(h, OP_WRITE_PAGE_SCAN_ACT, p, 4);
+    else send_cmd(h, OP_WRITE_PAGE_SCAN_ACT, p, 4);
+    if (h->ps_type0 > 0) {
+        p[0] = (unsigned char)h->ps_type0;
+        if (wait) hci_sync(h, OP_WRITE_PAGE_SCAN_TYPE, p, 1);
+        else send_cmd(h, OP_WRITE_PAGE_SCAN_TYPE, p, 1);
+    }
+    log_line("controller: page scan put back to %u ms every %u ms%s",
+             ((unsigned)h->ps_act0 & 0xFFFF) * 5 / 8, ((unsigned)h->ps_act0 >> 16) * 5 / 8,
+             h->ps_type0 > 0 ? ", interlaced" : "");
+    if (!wait) {
+        send_cmd(h, OP_READ_PAGE_SCAN_ACT, NULL, 0);
+        send_cmd(h, OP_READ_PAGE_SCAN_TYPE, NULL, 0);
+    }
+}
+
 static void page_pad(host_t *h, link_t *l)
 {
     const unsigned char *c = l->create_params;
     unsigned offset = le16(c + 10);
 
+    if (l->pairing) page_scan_low(h);
     l->paging = 1;
     l->page_started = 0;
     l->t_create = now_ms();
@@ -1350,6 +1401,9 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         memcpy(h->cc, ev, (size_t)h->cc_len);
         stats_cmd(h, h->cc_op, 0);
         on_setting(h, h->cc_op, ev, len);
+        if ((h->cc_op == OP_WRITE_PAGE_SCAN_ACT || h->cc_op == OP_WRITE_PAGE_SCAN_TYPE) && ev[5] != 0)
+            log_line("controller: page scan %s write refused (status %#04x)",
+                     h->cc_op == OP_WRITE_PAGE_SCAN_ACT ? "activity" : "type", ev[5]);
         if (h->cc_op == OP_PIN_CODE_REPLY && len >= 12 && (l = link_by_addr(h, ev + 6)))
             log_line("pad %s: controller took the PIN reply (status %#04x)", addr_str(l->addr), ev[5]);
         if (h->cc_op == OP_READ_RSSI && len >= 9 && ev[5] == 0 && (l = link_by_handle(h, le16(ev + 6))))
@@ -1729,6 +1783,7 @@ void host_poll(host_t *h, int timeout_ms)
         h->probes = 0;
     }
 
+    if (!linking) page_scan_restore(h, 0);
     chip_stats(h, now, now < h->pair_until || linking);
 
     /* Keep searching through the pairing window, one pad at a time. */
@@ -1926,6 +1981,8 @@ static int setup(host_t *h)
     hci_sync(h, OP_READ_PAGE_SCAN_TYPE, NULL, 0);
     hci_sync(h, OP_READ_INQ_SCAN_ACT, NULL, 0);
     hci_sync(h, OP_READ_INQUIRY_MODE, NULL, 0);
+    h->ps_act0 = h->setting[1];
+    h->ps_type0 = h->setting[3];
 
     if (hci_sync(h, OP_READ_BD_ADDR, NULL, 0) && h->cc_len >= 12) memcpy(h->bdaddr, h->cc + 6, 6);
     log_line("controller address %s", addr_str(h->bdaddr));
@@ -1938,6 +1995,7 @@ static void restore(host_t *h)
 {
     unsigned char scan[1];
 
+    page_scan_restore(h, 1);
     le_shutdown(h);
     if (h->scan_set < 0) return;
     if (hci_sync(h, OP_READ_SCAN_ENABLE, NULL, 0) && h->cc_len >= 7 && h->cc[6] == h->scan_set) {

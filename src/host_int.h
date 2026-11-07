@@ -43,6 +43,8 @@
 #define OP_READ_INQ_SCAN_ACT    0x0C1D
 #define OP_READ_INQUIRY_MODE    0x0C44
 #define OP_READ_PAGE_SCAN_TYPE  0x0C46
+#define OP_WRITE_PAGE_SCAN_ACT  0x0C1C
+#define OP_WRITE_PAGE_SCAN_TYPE 0x0C47
 
 #define CID_SIGNALING   0x0001
 #define PSM_SDP         0x0001
@@ -101,6 +103,11 @@
 #define T_CHIP_STATS    5000    /* the chip's traffic is summed up this often while pairing */
 #define CHIP_CMDS         24    /* distinct opcodes counted per summary */
 #define OTHER_LOG_MAX     64    /* lines about the system's own connections, per run */
+/* Page scan while a pad is paged and set up for pairing: the default,
+ * 11.25 ms every 1.28 s, standard. The system's own (208 ms every 417 ms,
+ * interlaced, on the PS5) leaves paging half the radio's time. */
+#define PS_LOW_INTERVAL 0x0800
+#define PS_LOW_WINDOW   0x0012
 #define RX_LOG_MAX        24    /* inbound frames logged per link before ready */
 #define T_CFG_RESEND    1200
 #define CFG_TRIES          6
@@ -324,6 +331,8 @@ struct host {
     } st;
     int other_logged;               /* lines about others' connections */
     int setting[6];                 /* chip settings last logged, -1: none yet */
+    int ps_act0, ps_type0;          /* page scan as found at setup, -1: unknown */
+    int ps_low;                     /* turned down by us, to put back */
 };
 
 
