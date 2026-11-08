@@ -33,6 +33,12 @@ static int32_t g_login[4] = { 0x10000000, -1, -1, -1 };
 int32_t sceUserServiceGetInitialUser(int32_t *u) { *u = g_init_user; return 0; }
 int32_t sceUserServiceGetForegroundUser(int32_t *u) { *u = g_fore_user; return 0; }
 int32_t sceUserServiceGetLoginUserIdList(int32_t list[4]) { memcpy(list, g_login, sizeof g_login); return 0; }
+int32_t sceUserServiceGetUserColor(int32_t u, int32_t *c)
+{
+    int i;
+    for (i = 0; i < 4; i++) if (g_login[i] == u) { *c = i; return 0; }
+    return (int32_t)0x80960002;     /* not signed in */
+}
 int32_t scePadInit(void) { note('I'); if (g_init_result == 0) g_inited = 1; return g_init_result; }
 int32_t scePadSetProcessPrivilege(int32_t v)
 {
@@ -106,6 +112,26 @@ int main(void)
                               "deviceType=22 userId=0x1e5c6ea6(509374118)") == 0);
     CHECK(vpad_device_in_line("<118>[Umm] processMbusEvent() event=DEVICE_REMOVED deviceId=0xb030d "
                               "deviceType=22 userId=0x0(0)") == 0);
+
+    printf("kernel log lines: a controller handed to a user, both wordings\n");
+    {
+        uint64_t dev = 0;
+        int32_t user = 0;
+        CHECK(vpad_owner_in_line("<118>[Umm] processMbusEvent() event=DEVICE_OWNER_CHANGED deviceId=0x70301 "
+                                 "deviceType=22 userId=0x1e5c6ea6(509374118)", &dev, &user) == 1);
+        CHECK(dev == 0x70301ull && user == 0x1e5c6ea6);
+        CHECK(vpad_owner_in_line("<118>#LOGIN MGR# Receive Event : SCE_MBUS_EVENT_DEVICE_OWNER_CHANGED "
+                                 "[DeviceId:0x50300][UserId:0x1e5c6ea2]", &dev, &user) == 1);
+        CHECK(dev == 0x50300ull && user == 0x1e5c6ea2);
+        CHECK(vpad_owner_in_line("<118>[Umm] processMbusEvent() event=DEVICE_OWNER_CHANGED deviceId=0x130300 "
+                                 "deviceType=22 userId=0x0(0)", &dev, &user) == 1);
+        CHECK(dev == 0x130300ull && user == 0);
+        CHECK(vpad_owner_in_line("<118>[Umm] processMbusEvent() event=DEVICE_ADDED deviceId=0xb030d "
+                                 "deviceType=22 userId=0x0(0)", &dev, &user) == 0);
+        CHECK(vpad_klog_of_interest("<118>[Umm] onUserServiceEvent() User LoggedIn. userId=0x1e5c6ea2(509374114)"));
+        CHECK(vpad_klog_of_interest("<118>#LOGIN MGR# Battery status changed."));
+        CHECK(!vpad_klog_of_interest("<118>[SceShellCore] FMEM   4.8/  18.1 padbridge"));
+    }
 
     printf("vpad_init: libScePad is initialised before its privilege is set\n");
     reset(0, 0);

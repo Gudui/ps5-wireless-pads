@@ -64,4 +64,10 @@ int32_t vpad_choose_user(const int32_t login[4], int32_t init, int32_t fore, con
 /* The DeviceId a kernel log line announces a virtual DualSense with, or 0. */
 uint64_t vpad_device_in_line(const char *line);
 
+/* A kernel log line handing a controller to a user: 1 with both, else 0. */
+int vpad_owner_in_line(const char *line, uint64_t *dev, int32_t *user);
+
+/* A kernel log line about controllers or users, kept while following it. */
+int vpad_klog_of_interest(const char *line);
+
 #endif
