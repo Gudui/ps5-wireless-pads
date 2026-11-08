@@ -251,7 +251,7 @@ static void pool_expire(acl_pool *p)
 {
     long now = now_ms();
 
-    while (p->count && now - p->inflight[p->head] > INFLIGHT_MS) {
+    while (p->count && now - p->inflight[p->head] > (p->expire_ms ? p->expire_ms : INFLIGHT_MS)) {
         p->head = (p->head + 1) % INFLIGHT_MAX;
         p->count--;
         if (p->credits < p->max) p->credits++;
@@ -985,8 +985,10 @@ static int wii_remote_name(const unsigned char *name, int length)
     return 0;
 }
 
-/* Page scan down to the default while a pad is paged and set up for
- * pairing, and back to what the system had once no pairing link is left.
+/* Page scan down to the default while a pad is paged or linked, and back
+ * to what the system had once no BR/EDR link is left. The system's 208 ms
+ * of every 417 ms leaves a link half the radio: a Wii Remote's reports
+ * came late and the chip's buffers overflowed.
  * Read back after each write: the log shows what the chip took. */
 static void page_scan_low(host_t *h)
 {
@@ -1007,7 +1009,7 @@ static void page_scan_low(host_t *h)
     send_cmd(h, OP_READ_PAGE_SCAN_ACT, NULL, 0);
     send_cmd(h, OP_READ_PAGE_SCAN_TYPE, NULL, 0);
     h->ps_low = 1;
-    log_line("controller: page scan turned down to %u ms every %u ms, standard, while pairing (was %u ms every %u ms)",
+    log_line("controller: page scan turned down to %u ms every %u ms, standard, while a pad is linked (was %u ms every %u ms)",
              PS_LOW_WINDOW * 5 / 8, PS_LOW_INTERVAL * 5 / 8, win * 5 / 8, iv * 5 / 8);
 }
 
@@ -1478,6 +1480,17 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         }
         break;
 
+    case 0x1A:  /* Data Buffer Overflow: link type */
+        if (len >= 3 && ev[2] == 0x01) {
+            acl_pool *p = &h->br;
+            if (!p->overflows++ || p->expire_ms != INFLIGHT_SLOW_MS)
+                log_line("controller: ACL buffers overflowed; a buffer is free again only when reported sent, or after %d ms",
+                         INFLIGHT_SLOW_MS);
+            p->expire_ms = INFLIGHT_SLOW_MS;
+            p->credits = 0;             /* full: wait for the reports */
+        }
+        break;
+
     case 0x13:  /* Number Of Completed Packets: (handle, count) pairs */
         for (i = 0; i < ev[2] && 3 + i * 4 + 4 <= len; i++) {
             int done = (int)le16(ev + 3 + i * 4 + 2);
@@ -1755,7 +1768,7 @@ static void start_inquiry(host_t *h)
 void host_poll(host_t *h, int timeout_ms)
 {
     long now;
-    int i, linking = 0;
+    int i, linking = 0, linked = 0;
 
     if (!h) return;                     /* no Bluetooth: nothing to do */
 
@@ -1774,6 +1787,7 @@ void host_poll(host_t *h, int timeout_ms)
          * take the radio its authentication needs (a Wii Remote dropped
          * every reconnect after 3 s until the search ended). */
         if (h->links[i].used && !h->links[i].ready && !h->links[i].le) linking = 1;
+        if (h->links[i].used && !h->links[i].le) linked = 1;
     }
     le_poll(h, now);
 
@@ -1792,7 +1806,8 @@ void host_poll(host_t *h, int timeout_ms)
         h->probes = 0;
     }
 
-    if (!linking) page_scan_restore(h, 0);
+    if (linked) page_scan_low(h);
+    else page_scan_restore(h, 0);
     chip_stats(h, now, now < h->pair_until || linking);
 
     /* Keep searching through the pairing window, one pad at a time, and

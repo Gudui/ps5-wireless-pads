@@ -129,6 +129,10 @@
  * after INFLIGHT_MS is taken as sent. */
 #define INFLIGHT_MAX      64
 #define INFLIGHT_MS       60
+/* After the chip reports a Data Buffer Overflow, packets went out slower
+ * than that (a Wii Remote's link, with page scan busy): from then on a
+ * buffer is only taken as free after this long without a report. */
+#define INFLIGHT_SLOW_MS 1000
 
 #define DB_MAX            16
 #define DB_REC            64    /* one record in the store file */
@@ -167,6 +171,8 @@ typedef struct {
     int credits, max;
     long inflight[INFLIGHT_MAX];
     int head, count;
+    int expire_ms;                  /* 0: INFLIGHT_MS */
+    int overflows;
 } acl_pool;
 
 #define LE_MAX_CHARS 24

@@ -75,6 +75,10 @@ typedef struct {
     /* The chip's page scan as the PS5's system sets it: 208 ms every
      * 417 ms, interlaced. While it is that busy, pages time out (15 s). */
     int busy_page_scan;
+    /* The chip sends the host's ACL packets one every tx_ms ms, with 8
+     * buffers; a packet sent to a full chip is dropped with a Data
+     * Buffer Overflow event. 0: at once. */
+    int tx_ms;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -122,6 +126,7 @@ int    sim_inquiries(const sim_t *s);
 int    sim_inquiry_cancels(const sim_t *s);
 long   sim_last_inquiry_at(const sim_t *s);
 void   sim_set_mode(sim_t *s, sim_mode mode);  /* paired now: reconnects by itself */
+int    sim_overflows(const sim_t *s);      /* ACL packets dropped, chip full */
 void   sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset);   /* its scan mode, clock offset */
 
 #endif

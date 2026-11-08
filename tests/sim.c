@@ -61,6 +61,9 @@ struct sim {
     int inquiries, inquiry_cancels;
     long last_inquiry_at;
     long enc_at;                    /* encryption comes on then, 0: not starting */
+    queue txq;                      /* the host's ACL data the chip still holds (tx_ms) */
+    long t_tx;                      /* when the chip last sent one */
+    int overflows;
     queue held;                     /* the host's ACL data until then */
 };
 
@@ -724,19 +727,41 @@ static void wii_answer(sim_t *s, const unsigned char *o, int n)
     }
 }
 
+static int deliver(sim_t *s, const unsigned char *pkt, int len);
+
 static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
 {
     sim_t *s = ctx;
+
+    if (len < 8 || !s->connected) return 1;
+    if (s->pad.tx_ms) {                 /* the chip's buffers */
+        if (s->txq.count + s->held.count >= 8) {
+            unsigned char t = 0x01;     /* ACL */
+            s->overflows++;
+            event(s, 0x1A, &t, 1);
+            return 1;
+        }
+        if (!s->txq.count && !s->held.count) s->t_tx = g_clock;
+    }
+    if (s->enc_at && !s->enc) {         /* held, not reported sent */
+        q_put(&s->held, pkt, len);
+        return 1;
+    }
+    if (s->pad.tx_ms) {
+        q_put(&s->txq, pkt, len);
+        return 1;
+    }
+    return deliver(s, pkt, len);
+}
+
+static int deliver(sim_t *s, const unsigned char *pkt, int len)
+{
     unsigned cid;
     const unsigned char *d;
     int n;
     unsigned char ncp[5];
 
     if (len < 8 || !s->connected) return 1;
-    if (s->enc_at && !s->enc) {         /* held, not reported sent */
-        q_put(&s->held, pkt, len);
-        return 1;
-    }
     n = (int)le16(pkt + 4);
     cid = le16(pkt + 6);
     d = pkt + 8;
@@ -822,7 +847,17 @@ static int op_pump(void *ctx, int timeout_ms)
         s->enc_at = 0;
         s->enc = 1;
         ev_handle(s, 0x08, 0, 1, 1);
-        while ((n = q_get(&s->held, b, (int)sizeof b)) > 0) op_acl_send(s, b, n);
+        while ((n = q_get(&s->held, b, (int)sizeof b)) > 0) {
+            if (s->pad.tx_ms) q_put(&s->txq, b, n);
+            else deliver(s, b, n);
+        }
+        s->t_tx = g_clock;
+    }
+    while (s->pad.tx_ms && s->txq.count && g_clock - s->t_tx >= s->pad.tx_ms) {
+        unsigned char b[PKT];
+        int n = q_get(&s->txq, b, (int)sizeof b);
+        s->t_tx += s->pad.tx_ms;
+        deliver(s, b, n);
     }
     pad_step(s);
     return s->ev.count || s->acl.count;
@@ -920,6 +955,7 @@ void sim_disconnect(sim_t *s)
     s->connected = s->enc = s->got_output = 0;
     s->enc_at = 0;
     s->held.count = 0;
+    s->txq.count = 0;
     s->sdp.st = s->ctrl.st = s->intr.st = RC_CLOSED;
 }
 
@@ -985,6 +1021,7 @@ int sim_inquiries(const sim_t *s) { return s->inquiries; }
 int sim_inquiry_cancels(const sim_t *s) { return s->inquiry_cancels; }
 long sim_last_inquiry_at(const sim_t *s) { return s->last_inquiry_at; }
 void sim_set_mode(sim_t *s, sim_mode mode) { s->pad.mode = mode; }
+int sim_overflows(const sim_t *s) { return s->overflows; }
 void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
 {
     *mode = s->last_page_mode;

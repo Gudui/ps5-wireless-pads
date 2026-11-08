@@ -83,7 +83,10 @@ static void on_state(void *ud, int slot, const pad_state *st)
  * wait: the late answer is taken, and the second request's refusal does
  * not undo it. Both 7 and 8 refuse a second request, as the remote did;
  * 9 the chip's page scan is as busy as the PS5's system sets it, under
- * which pages time out: turned down while pairing, put back after. */
+ * which pages time out: turned down while the remote is linked, put back
+ * on close; 10 the chip sends one packet every 500 ms: after one Data
+ * Buffer Overflow PadBridge waits for completed-packet reports (the
+ * setup may still be going round, so its last output is not checked). */
 static void check_wii_ready(int wii, int trouble)
 {
     unsigned mode, offset;
@@ -110,6 +113,7 @@ static void check_wii_ready(int wii, int trouble)
     pad.late_rsp_ms = trouble == 8 ? 3000 : 0;
     pad.refuse_second_req = trouble == 7 || trouble == 8;
     pad.busy_page_scan = trouble == 9;
+    pad.tx_ms = trouble == 10 ? 500 : 0;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -137,8 +141,7 @@ static void check_wii_ready(int wii, int trouble)
         unsigned iv, win, type;
         CHECK(sim_busy_pages(sim) == 0);
         sim_page_scan(sim, &iv, &win, &type);
-        if (trouble == 9) CHECK(iv == 0x029B && win == 0x014D && type == 1);  /* put back */
-        else CHECK(iv == 0x0800 && win == 0x0012 && type == 0);             /* never touched */
+        CHECK(iv == 0x0800 && win == 0x0012 && type == 0);    /* down while linked, or never touched */
     }
     if (trouble == 6) CHECK(sim_names(sim) == 2 && sim_name_cancels(sim) == 0);
     CHECK(s.connects == 1);
@@ -148,9 +151,10 @@ static void check_wii_ready(int wii, int trouble)
     CHECK(s.states > 0);
     if (wii == 1) CHECK(s.last.buttons == (PAD_CROSS | PAD_DOWN));
     else CHECK(s.last.buttons == PAD_CROSS);
-    CHECK(sim_last_output(sim, (unsigned char[32]){0}, 32) == 4);           /* 0xA2 0x12 0x04 0x32 */
+    if (trouble != 10) CHECK(sim_last_output(sim, (unsigned char[32]){0}, 32) == 4);    /* 0xA2 0x12 0x04 0x32 */
     /* Paired: the search stops, no inquiry after it. */
     CHECK(sim_last_inquiry_at(sim) < s.t_ready);
+    if (trouble == 10) CHECK(sim_overflows(sim) <= 1);
     if (trouble == 0) {
         /* Switched off, then on again by a button while another pairing
          * window searches: the running inquiry is cancelled and none is
@@ -170,7 +174,13 @@ static void check_wii_ready(int wii, int trouble)
         CHECK(sim_inquiry_cancels(sim) > cancels);  /* the search paused */
         CHECK(s.inq_at_ready == inq);               /* none while it connected */
     }
-    host_close(host); sim_free(sim);
+    host_close(host);
+    if (trouble == 9) {                 /* the system's page scan, put back on close */
+        unsigned iv, win, type;
+        sim_page_scan(sim, &iv, &win, &type);
+        CHECK(iv == 0x029B && win == 0x014D && type == 1);
+    }
+    sim_free(sim);
     g_sim = NULL;
     unlink("build/test_wii_pads.db");
 }
@@ -252,6 +262,7 @@ int main(void)
     check_wii_ready(1, 7);
     check_wii_ready(1, 8);
     check_wii_ready(1, 9);
+    check_wii_ready(1, 10);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);
