@@ -154,6 +154,7 @@ typedef struct {
     long t_retry;           /* refused: not asked again before this */
     unsigned old_scid;      /* the cid of a request given up on, 0: none */
     int held_logged;        /* "waiting for encryption" logged */
+    int refusals;           /* our requests the pad refused on this link */
 } chan;
 
 /* A paired pad. Classic pads keep a link key; LE pads a long-term key
@@ -229,6 +230,7 @@ typedef struct {
     int connected;          /* the ACL link is up */
     unsigned handle;
     int pairing;            /* we found it in pairing mode */
+    int pad_asked;          /* the pad asked for a channel itself on this link */
     long t_create, t_conn;
 
     int name_pending, name_cancelled, wii_remote;

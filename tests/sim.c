@@ -64,6 +64,9 @@ struct sim {
     queue txq;                      /* the host's ACL data the chip still holds (tx_ms) */
     long t_tx;                      /* when the chip last sent one */
     int overflows;
+    int own_lost, own_lost_done;    /* lose_own_req: lost now; happened once */
+    long t_own_lost, repage_at;
+    int host_disconnects;
     queue held;                     /* the host's ACL data until then */
 };
 
@@ -241,6 +244,13 @@ static void rc_connect(sim_t *s, rchan *c)
 
     c->st = RC_CONNECTING;
     c->cfg_in = c->cfg_out = 0;
+    if (c == &s->ctrl && s->pad.lose_own_req && !s->own_lost_done) {
+        s->own_lost = s->own_lost_done = 1;     /* sent, never arrives */
+        s->t_own_lost = g_clock;
+        c->peer = 0;
+        ++s->sig_id;
+        return;
+    }
     put16(r, c->psm);
     put16(r + 2, c->cid);
     sig(s, 0x02, ++s->sig_id, r, 4);
@@ -258,7 +268,8 @@ static void on_host_signaling(sim_t *s, const unsigned char *d, int n)
         ch = rc_by_psm(s, le16(c));
         if (!ch) break;
         ch->reqs++;
-        if (s->pad.refuse_second_req && ch != &s->sdp && ch->st != RC_CLOSED && ch->peer != le16(c + 2)) {
+        if ((s->pad.refuse_second_req || (s->own_lost && ch == &s->ctrl)) && ch != &s->sdp &&
+            ch->st != RC_CLOSED && ch->peer != le16(c + 2)) {
             s->refused_chans++;
             put16(r, 0);
             put16(r + 2, le16(c + 2));
@@ -692,6 +703,12 @@ static int op_cmd(void *ctx, unsigned op, const void *params, int plen)
             break;
         }
         cmd_status(s, op, 0);
+        s->host_disconnects++;
+        if (s->own_lost) {
+            sim_disconnect(s);
+            s->repage_at = g_clock + 1600;
+            break;
+        }
         sim_disconnect(s);
         break;
     default:
@@ -789,6 +806,14 @@ static void pad_step(sim_t *s)
     rchan *all[3];
     int i;
 
+    if (s->repage_at && g_clock >= s->repage_at && !s->connected) {
+        s->repage_at = 0;
+        sim_power_on(s);
+    }
+    if (s->own_lost && s->connected && g_clock - s->t_own_lost >= 10000) {
+        sim_disconnect(s);                  /* gives up, and tries again */
+        s->repage_at = g_clock + 1600;
+    }
     if (!s->connected || !s->enc) return;
 
     /* L2CAP's retransmission timer: an unanswered request is sent again. */
@@ -956,6 +981,7 @@ void sim_disconnect(sim_t *s)
     s->enc_at = 0;
     s->held.count = 0;
     s->txq.count = 0;
+    s->own_lost = 0;
     s->sdp.st = s->ctrl.st = s->intr.st = RC_CLOSED;
 }
 
@@ -1022,6 +1048,7 @@ int sim_inquiry_cancels(const sim_t *s) { return s->inquiry_cancels; }
 long sim_last_inquiry_at(const sim_t *s) { return s->last_inquiry_at; }
 void sim_set_mode(sim_t *s, sim_mode mode) { s->pad.mode = mode; }
 int sim_overflows(const sim_t *s) { return s->overflows; }
+int sim_host_disconnects(const sim_t *s) { return s->host_disconnects; }
 void sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset)
 {
     *mode = s->last_page_mode;

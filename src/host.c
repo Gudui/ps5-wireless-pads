@@ -476,6 +476,7 @@ static void on_signaling(host_t *h, link_t *l, const unsigned char *d, int len)
             put16(r + 4, 0);            /* success */
             sig_send(h, l, SIG_CONN_RSP, id, r, 8);
             chan_send_cfg(h, l, ch);
+            l->pad_asked = 1;
             log_line("pad %s: accepted channel %#x", addr_str(l->addr), ch->psm);
             break;
 
@@ -511,6 +512,17 @@ static void on_signaling(host_t *h, link_t *l, const unsigned char *d, int len)
                 log_line("pad %s: channel %#x refused (%u)", addr_str(l->addr), ch->psm, le16(c + 4));
                 chan_set(ch, CH_CLOSED);
                 ch->t_retry = now_ms() + T_CHAN_REFUSED;
+                /* Seen on the PS5, the first reconnect after start: the
+                 * pad's own request for the channel never reached us, it
+                 * waits for our answer and refuses ours ("no resources")
+                 * until it gives up on the link 10 s later. Dropped after
+                 * the second refusal: it connects again by itself. Never
+                 * while pairing, nor once it has asked for a channel. */
+                if (le16(c + 4) == 4 && ++ch->refusals >= 2 && !l->pairing && !l->pad_asked) {
+                    log_line("pad %s: it holds channel %#x we never heard it ask for; dropping the link so it connects again",
+                             addr_str(l->addr), ch->psm);
+                    link_disconnect(h, l, "channel refused twice");
+                }
                 break;
             }
             ch->dcid = le16(c);
@@ -1842,6 +1854,17 @@ int host_set_output(host_t *h, int slot, const pad_output *out)
     l = &h->links[slot];
     if (!l->used || !l->ready) return 0;
     l->out = *out;
+    return send_output(h, l);
+}
+
+int host_set_player(host_t *h, int slot, int player)
+{
+    link_t *l;
+
+    if (slot < 0 || slot >= HOST_MAX_PADS || player < 1 || player > 4) return 0;
+    l = &h->links[slot];
+    if (!l->used || !l->ready) return 0;
+    l->out.player = (uint8_t)player;
     return send_output(h, l);
 }
 

@@ -79,6 +79,13 @@ typedef struct {
      * buffers; a packet sent to a full chip is dropped with a Data
      * Buffer Overflow event. 0: at once. */
     int tx_ms;
+    /* Seen on the PS5, the first reconnect after PadBridge starts: the
+     * remote's own control-channel request is lost (never reaches the
+     * host). It refuses the host's requests for it ("no resources") and
+     * gives up on the link 10 s later, connecting again 1.6 s after. A
+     * host's disconnect meanwhile is taken the same way (assumed: not seen
+     * on the console). Only the first time. */
+    int lose_own_req;
 } sim_pad;
 
 sim_t *sim_new(const sim_pad *pad);
@@ -127,6 +134,7 @@ int    sim_inquiry_cancels(const sim_t *s);
 long   sim_last_inquiry_at(const sim_t *s);
 void   sim_set_mode(sim_t *s, sim_mode mode);  /* paired now: reconnects by itself */
 int    sim_overflows(const sim_t *s);      /* ACL packets dropped, chip full */
+int    sim_host_disconnects(const sim_t *s);    /* Disconnect commands from the host */
 void   sim_last_page(const sim_t *s, unsigned *mode, unsigned *offset);   /* its scan mode, clock offset */
 
 #endif

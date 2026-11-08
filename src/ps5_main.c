@@ -183,9 +183,26 @@ static int web_press_ps(int slot)
     return g_vpad_ok && vpad_press_ps(slot, PS_HOLD_MS);
 }
 
+/* The player number each pad shows, once its user is known: 0 none set. */
+static int g_shown_player[HOST_MAX_PADS];
+
+static void show_players(void)
+{
+    int i, p;
+
+    for (i = 0; i < HOST_MAX_PADS; i++) {
+        p = vpad_player(i);
+        if (p < 1 || p == g_shown_player[i]) continue;
+        if (!host_set_player(g_host, i, p)) continue;
+        g_shown_player[i] = p;
+        log_line("slot %d: lights show player %d, its user's signed-in position + 1", i, p);
+    }
+}
+
 static void on_disconnect(void *ud, int slot)
 {
     (void)ud;
+    if (slot >= 0 && slot < HOST_MAX_PADS) g_shown_player[slot] = 0;
     vpad_remove(slot);
     notify(tr(MSG_DISCONNECTED), slot_name(slot), slot + 1);
 }
@@ -424,6 +441,7 @@ int main(void)
         now = now_ms();
         web_poll(g_web);
         if (g_vpad_ok) vpad_poll(now);
+        if (g_vpad_ok && g_host) show_players();
 
         /* Rest mode on its way: let go cleanly before it, not after. */
         if (now - last_power >= suspend_poll_ms(&rest)) {

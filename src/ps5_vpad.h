@@ -70,4 +70,13 @@ int vpad_owner_in_line(const char *line, uint64_t *dev, int32_t *user);
 /* A kernel log line about controllers or users, kept while following it. */
 int vpad_klog_of_interest(const char *line);
 
+/* A user's position in the list of signed-in users, 0 to 3; -1 for nobody
+ * or a user not in it. */
+int vpad_position_in(const int32_t login[4], int32_t user);
+
+/* The player number a slot's pad should show: its user's signed-in position
+ * + 1, as the console gave it (at the bind, or later when another user
+ * takes it). 0: not known, or no live virtual pad. */
+int vpad_player(int slot);
+
 #endif

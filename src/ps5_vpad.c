@@ -110,6 +110,7 @@ typedef struct {
     pad_state last;             /* the pad's latest state, resent while PS is held from the menu */
     long ps_until;              /* ms; PS is added to the frames until then (0: not held) */
     int ps_active;              /* a frame with PS went out and the release is still to be sent */
+    int player;                 /* the user's signed-in position + 1, 0: not known */
 } vslot;
 
 static mbus_bind_fn g_bind;
@@ -266,22 +267,35 @@ int vpad_klog_of_interest(const char *line)
  * signed-in users (0 to 3), to set beside the number the console shows for
  * each controller. sceUserServiceGetUserColor is not used: on firmware 5.50
  * wii-pin14 stopped dead at its first call. */
-static void describe_user(int32_t user, char *out, size_t n)
+int vpad_position_in(const int32_t login[4], int32_t user)
+{
+    int i;
+
+    if (user == 0 || user == 0xFF || user == -1) return -1;
+    for (i = 0; i < 4; i++) if (login[i] == user) return i;
+    return -1;
+}
+
+/* The user's signed-in position, 0 to 3, or -1. */
+static int position_of(int32_t user)
 {
     int32_t login[4] = { -1, -1, -1, -1 };
-    int i;
+
+    if (sceUserServiceGetLoginUserIdList(login) != 0) return -1;
+    return vpad_position_in(login, user);
+}
+
+static void describe_user(int32_t user, char *out, size_t n)
+{
+    int p;
 
     if (user == 0 || user == 0xFF || user == -1) {
         snprintf(out, n, "%#x (nobody)", (unsigned)user);
         return;
     }
-    if (sceUserServiceGetLoginUserIdList(login) != 0) login[0] = login[1] = login[2] = login[3] = -1;
-    for (i = 0; i < 4; i++)
-        if (login[i] == user) {
-            snprintf(out, n, "%#x (signed-in position %d)", (unsigned)user, i);
-            return;
-        }
-    snprintf(out, n, "%#x (not signed in)", (unsigned)user);
+    p = position_of(user);
+    if (p >= 0) snprintf(out, n, "%#x (signed-in position %d)", (unsigned)user, p);
+    else snprintf(out, n, "%#x (not signed in)", (unsigned)user);
 }
 
 /* Who the console gave a controller to, from a kernel log line. */
@@ -297,6 +311,7 @@ static void note_owner(const char *line)
     for (i = 0; i < HOST_MAX_PADS; i++)
         if (g_slot[i].st == VP_READY && g_slot[i].dev == dev) {
             log_line("slot %d: the console gives device %#llx to user %s", i, (unsigned long long)dev, d);
+            g_slot[i].player = position_of(user) + 1;
             return;
         }
     log_line("vpad: the console gives device %#llx (not PadBridge's) to user %s", (unsigned long long)dev, d);
@@ -618,6 +633,7 @@ static void finish_identification(long now)
         char d[96];
         describe_user(g_user, d, sizeof d);
         log_line("slot %d: its user is %s", slot, d);
+        v->player = position_of(g_user) + 1;
     }
     watch_start(now, "a virtual pad was bound");
 }
@@ -646,6 +662,11 @@ void vpad_poll(long now)
             start_identification(i);
             return;
         }
+}
+
+int vpad_player(int slot)
+{
+    return slot >= 0 && slot < HOST_MAX_PADS && g_slot[slot].st == VP_READY ? g_slot[slot].player : 0;
 }
 
 int vpad_live(int slot)

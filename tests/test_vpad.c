@@ -126,6 +126,15 @@ int main(void)
         CHECK(vpad_klog_of_interest("<118>#LOGIN MGR# Battery status changed."));
         CHECK(!vpad_klog_of_interest("<118>[SceShellCore] FMEM   4.8/  18.1 padbridge"));
     }
+    printf("a user's signed-in position\n");
+    {
+        const int32_t login[4] = { 0x1e5c6ea2, 0x1e5c6ea6, -1, -1 };
+        CHECK(vpad_position_in(login, 0x1e5c6ea2) == 0);
+        CHECK(vpad_position_in(login, 0x1e5c6ea6) == 1);
+        CHECK(vpad_position_in(login, 0x1e5c6ea7) == -1);
+        CHECK(vpad_position_in(login, 0) == -1 && vpad_position_in(login, 0xFF) == -1);
+        CHECK(vpad_position_in(login, -1) == -1);
+    }
 
     printf("vpad_init: libScePad is initialised before its privilege is set\n");
     reset(0, 0);

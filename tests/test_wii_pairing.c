@@ -86,7 +86,11 @@ static void on_state(void *ud, int slot, const pad_state *st)
  * which pages time out: turned down while the remote is linked, put back
  * on close; 10 the chip sends one packet every 500 ms: after one Data
  * Buffer Overflow PadBridge waits for completed-packet reports (the
- * setup may still be going round, so its last output is not checked). */
+ * setup may still be going round, so its last output is not checked);
+ * 11 reconnecting, the remote's own control-channel request is lost and
+ * it refuses PadBridge's: the link is dropped after the second refusal
+ * and the remote is ready within 9 s of switching on, not after its own
+ * 10 s give-up. */
 static void check_wii_ready(int wii, int trouble)
 {
     unsigned mode, offset;
@@ -114,6 +118,7 @@ static void check_wii_ready(int wii, int trouble)
     pad.refuse_second_req = trouble == 7 || trouble == 8;
     pad.busy_page_scan = trouble == 9;
     pad.tx_ms = trouble == 10 ? 500 : 0;
+    pad.lose_own_req = trouble == 11;
     pad.needs_output = 1;
     pad.basic[0] = 0x30; pad.basic[2] = 0x08; pad.basic_len = 3;            /* A */
     pad.report[0] = 0x32; pad.report[2] = 0x08;
@@ -155,6 +160,25 @@ static void check_wii_ready(int wii, int trouble)
     /* Paired: the search stops, no inquiry after it. */
     CHECK(sim_last_inquiry_at(sim) < s.t_ready);
     if (trouble == 10) CHECK(sim_overflows(sim) <= 1);
+    if (trouble != 10) {
+        /* The player number: the remote's LEDs (report 0x11, LED 2 is 0x20). */
+        unsigned char o[32];
+        CHECK(host_set_player(host, 0, 2) == 1);
+        CHECK(sim_last_output(sim, o, 32) == 3 && o[0] == 0xA2 && o[1] == 0x11 && o[2] == 0x20);
+        CHECK(host_set_player(host, 0, 5) == 0 && host_set_player(host, 1, 1) == 0);
+    }
+    if (trouble == 11) {
+        long t_on;
+        sim_disconnect(sim);
+        sim_set_mode(sim, SIM_RECONNECT);
+        for (end = sim_now() + 500; sim_now() < end;) host_poll(host, 5);
+        t_on = sim_now();
+        sim_power_on(sim);
+        for (end = sim_now() + 20000; sim_now() < end && s.connects < 2;) host_poll(host, 5);
+        CHECK(s.connects == 2);
+        CHECK(sim_host_disconnects(sim) == 1);
+        CHECK(s.t_ready - t_on < 9000);
+    }
     if (trouble == 0) {
         /* Switched off, then on again by a button while another pairing
          * window searches: the running inquiry is cancelled and none is
@@ -263,6 +287,7 @@ int main(void)
     check_wii_ready(1, 8);
     check_wii_ready(1, 9);
     check_wii_ready(1, 10);
+    check_wii_ready(1, 11);
     check_pair("Nintendo RVL-CNT-01", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-TR", 0, 0, 1, 1, 0, 0);
     check_pair("Nintendo RVL-CNT-01-UC", 0, 0, 2, 0, 0, 0);
