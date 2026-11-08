@@ -33,12 +33,6 @@ static int32_t g_login[4] = { 0x10000000, -1, -1, -1 };
 int32_t sceUserServiceGetInitialUser(int32_t *u) { *u = g_init_user; return 0; }
 int32_t sceUserServiceGetForegroundUser(int32_t *u) { *u = g_fore_user; return 0; }
 int32_t sceUserServiceGetLoginUserIdList(int32_t list[4]) { memcpy(list, g_login, sizeof g_login); return 0; }
-int32_t sceUserServiceGetUserColor(int32_t u, int32_t *c)
-{
-    int i;
-    for (i = 0; i < 4; i++) if (g_login[i] == u) { *c = i; return 0; }
-    return (int32_t)0x80960002;     /* not signed in */
-}
 int32_t scePadInit(void) { note('I'); if (g_init_result == 0) g_inited = 1; return g_init_result; }
 int32_t scePadSetProcessPrivilege(int32_t v)
 {

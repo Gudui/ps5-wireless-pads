@@ -68,7 +68,6 @@ int32_t sceUserServiceInitialize(void *params);
 int32_t sceUserServiceGetInitialUser(int32_t *user);
 int32_t sceUserServiceGetForegroundUser(int32_t *user);
 int32_t sceUserServiceGetLoginUserIdList(int32_t list[4]);
-int32_t sceUserServiceGetUserColor(int32_t user, int32_t *colour);
 int32_t scePadInit(void);
 int32_t scePadSetProcessPrivilege(int32_t privilege);
 int32_t scePadGetHandle(int32_t user, int32_t type, int32_t index);
@@ -261,42 +260,28 @@ int vpad_klog_of_interest(const char *line)
            strstr(line, "PlayerColor") || strstr(line, "UserColor") || strstr(line, "UserNumber");
 }
 
-/* ---- users' colours ------------------------------------------------------------
+/* ---- users ------------------------------------------------------------------------
  *
- * The console gives each signed-in user a colour, 0 blue, 1 red, 2 green,
- * 3 pink: player 1 to 4 as a DualSense's lights show them. Logged with each
- * change of users and with each controller given to one, to tell whether a
- * controller's number is its user's. */
-static const char *colour_name(int32_t c)
-{
-    static const char *const names[] = { "blue", "red", "green", "pink" };
-    return c >= 0 && c < 4 ? names[c] : "unknown";
-}
-
+ * A user as the log names one: with the position in the console's list of
+ * signed-in users (0 to 3), to set beside the number the console shows for
+ * each controller. sceUserServiceGetUserColor is not used: on firmware 5.50
+ * wii-pin14 stopped dead at its first call. */
 static void describe_user(int32_t user, char *out, size_t n)
 {
-    int32_t c[2] = { 0x7F7F7F7F, 0x7F7F7F7F }, r;
+    int32_t login[4] = { -1, -1, -1, -1 };
+    int i;
 
     if (user == 0 || user == 0xFF || user == -1) {
         snprintf(out, n, "%#x (nobody)", (unsigned)user);
         return;
     }
-    r = sceUserServiceGetUserColor(user, c);
-    if (r != 0) snprintf(out, n, "%#x (colour not read: %#x)", (unsigned)user, (unsigned)r);
-    else snprintf(out, n, "%#x (colour %d, %s: player %d%s)", (unsigned)user, (int)c[0],
-                  colour_name(c[0]), (int)c[0] + 1, c[1] != 0x7F7F7F7F ? "; wrote past 4 bytes" : "");
-}
-
-static void log_user_colours(const int32_t login[4])
-{
-    char d[96];
-    int i;
-
-    for (i = 0; i < 4; i++) {
-        if (login[i] == -1 || login[i] == 0) continue;
-        describe_user(login[i], d, sizeof d);
-        log_line("users: signed-in position %d: %s", i, d);
-    }
+    if (sceUserServiceGetLoginUserIdList(login) != 0) login[0] = login[1] = login[2] = login[3] = -1;
+    for (i = 0; i < 4; i++)
+        if (login[i] == user) {
+            snprintf(out, n, "%#x (signed-in position %d)", (unsigned)user, i);
+            return;
+        }
+    snprintf(out, n, "%#x (not signed in)", (unsigned)user);
 }
 
 /* Who the console gave a controller to, from a kernel log line. */
@@ -435,7 +420,6 @@ static int32_t main_user(void)
         log_line("users: initial %#x, foreground %#x, signed in %#x %#x %#x %#x%s%s", (unsigned)init,
                  (unsigned)fore, (unsigned)login[0], (unsigned)login[1], (unsigned)login[2],
                  (unsigned)login[3], want[0] ? ", bind_user=" : "", want);
-        log_user_colours(login);
     }
     return vpad_choose_user(login, init, fore, want);
 }
