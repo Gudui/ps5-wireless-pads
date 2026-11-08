@@ -624,6 +624,7 @@ static int wii_parse(void *ctx, const uint8_t *r, int n, pad_state *st)
 
     if (n < 3 || r[0] < 0x20 || r[0] > 0x37) return PARSE_NONE;
     st->buttons = wii_core_buttons(r);
+    st->instrument = c->ext == WII_EXT_GUITAR ? PAD_INSTRUMENT_GUITAR : PAD_INSTRUMENT_NONE;
 
     switch (r[0]) {
     case 0x20:
@@ -634,6 +635,7 @@ static int wii_parse(void *ctx, const uint8_t *r, int n, pad_state *st)
         } else if (c->ext == WII_EXT_NONE) {
             c->ext = WII_EXT_UNKNOWN;
         }
+        st->instrument = c->ext == WII_EXT_GUITAR ? PAD_INSTRUMENT_GUITAR : PAD_INSTRUMENT_NONE;
         {
             unsigned pct = r[6] * 100u / 0xC8;
             st->battery_pct = (uint8_t)(pct > 100 ? 100 : pct);
@@ -649,6 +651,7 @@ static int wii_parse(void *ctx, const uint8_t *r, int n, pad_state *st)
         return PARSE_RESTART;
     case 0x21:
         if (n >= 12 && r[4] == 0x00 && r[5] == 0xFA && !(r[3] & 0x0F)) wii_ext_id(c, r + 6);
+        st->instrument = c->ext == WII_EXT_GUITAR ? PAD_INSTRUMENT_GUITAR : PAD_INSTRUMENT_NONE;
         return PARSE_OK;
     case 0x32: case 0x34: at = 3; break;
     case 0x35: at = 6; break;

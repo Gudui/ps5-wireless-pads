@@ -390,11 +390,13 @@ static void test_wii(void)
     /* Before the id is read, the extension bytes are not used. */
     CHECK(p->parse(ctx, rep, sizeof rep, &st) == PARSE_OK);
     CHECK(st.buttons == PAD_CROSS);
+    CHECK(st.instrument == PAD_INSTRUMENT_NONE);
     CHECK(p->parse(ctx, status, sizeof status, &st) == PARSE_OK);   /* the asked one */
     CHECK(st.has_battery && st.battery_pct == 100);
     CHECK(p->parse(ctx, id, sizeof id, &st) == PARSE_OK);
     CHECK(p->parse(ctx, rep, sizeof rep, &st) == PARSE_FULL);
     CHECK(st.buttons == (PAD_CROSS | PAD_L1 | PAD_DOWN | PAD_CREATE));
+    CHECK(st.instrument == PAD_INSTRUMENT_GUITAR);
     CHECK(st.lx == 0x20 * 255 / 63 && st.ly == 255 - 0x20 * 255 / 63);
     CHECK(st.rx == 255);                                    /* whammy down */
     rep[6] = 0x10;                                          /* whammy at rest */
@@ -406,8 +408,10 @@ static void test_wii(void)
     /* Unplugged: an unasked status report; the sequence must run again. */
     status[3] = 0x10;
     CHECK(p->parse(ctx, status, sizeof status, &st) == PARSE_RESTART);
+    CHECK(st.instrument == PAD_INSTRUMENT_NONE);
     CHECK(p->parse(ctx, rep, sizeof rep, &st) == PARSE_FULL);
     CHECK(st.buttons == PAD_CROSS);                         /* guitar bytes ignored */
+    CHECK(st.instrument == PAD_INSTRUMENT_NONE);
     /* Plugged back in: unknown until its id is read again. */
     status[3] = 0x12;
     CHECK(p->parse(ctx, status, sizeof status, &st) == PARSE_RESTART);

@@ -7,7 +7,7 @@
 
 /* One #define line only: ps5.mk reads the version from it. */
 #ifndef PADBRIDGE_VERSION
-#define PADBRIDGE_VERSION "0.2.0-wii-pin16"
+#define PADBRIDGE_VERSION "0.2.0-wii-pin17"
 #endif
 
 #endif
